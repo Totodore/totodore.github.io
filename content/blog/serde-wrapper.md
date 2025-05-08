@@ -1,7 +1,7 @@
 +++
-title = "Extending serde capabilities by wrapping serializer and deserializers"
+title = "Inside Serde: Building a Custom JSON Deserializer with binary support and more"
 date = 2025-05-08
-description = ""
+description = "This article explores how to extend serde in Rust by wrapping the JSON deserializer to support Socket.IO’s custom packet format — including variadic arguments, tuple-aware routing, and seamless reinjection of out-of-band binary payloads — all while keeping performance and type safety intact."
 [taxonomies]
 tags = ["socketioxide", "rust"]
 +++
@@ -16,7 +16,7 @@ It uses a custom packet format that doesn’t map cleanly to Rust’s type syste
 
 The result is a clean, ergonomic, and performant single-phase deserialization system — with a 10× speedup on packet routing.
 
-## Custom Serde Wrapper for Socket.IO Packet Handling in Rust
+## Socketioxide introduction
 
 While working on [Socketioxide](https://github.com/totodore/socketioxide), an Axum-like Socket.IO server implementation in Rust, I encountered an issue I initially thought would be trivial. Spoiler: it wasn’t. It led me to rethink how `serde` works and ultimately dive deep into customizing it for the socketioxide needs.
 
