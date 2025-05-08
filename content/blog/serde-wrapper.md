@@ -106,7 +106,7 @@ This mostly worked and had the following trade-offs:
 * Simple and dynamic: Everything is handled at runtime.
 * No need for users to write custom serializers/deserializers.
 
-#### ❌ Drawbacks
+#### Drawbacks
 
 * Lacks precision: Can't distinguish tuples from vectors — a critical protocol mismatch.
 * No binary reinjection support: Once separated, placeholders and actual buffers are hard to correlate and rebind.
@@ -116,7 +116,11 @@ They are provided in an adjacent vector.
 
 ### Can We Do Better? Harnessing Serde's Modularity
 
-I wanted to stick with Serde’s ecosystem but needed more control. Here's what I explored:
+The first emerging idea to solve this issue would be to write a custom JSON-parser that will partially decode our data. However that is a **terrible** idea for a **lot** of reasons.
+It's error prone, complex, the resulting code will be inefficent and insecure.
+
+Therefore, I wanted to stick with Serde’s ecosystem but needed more control, thanksfully serde is incredibly flexible.
+Here's what I explored:
 
 #### 1. Annotated Fields
 
@@ -241,11 +245,10 @@ With this we don't need to deserialize our data to an intermediate dynamic value
 
 2. **Precise handling of tuples vs arrays for variadic arguments**:
 
-In socket.io if you send a vec with `socket.emit("event", [1, 2, 3, 4])`, it will be serialized like this: `[event, [1, 2, 3, 4]]` but if you send variadics with `socket.emit("event", 1, 2, 3, 4)`, it will be serialized like this: `[event, 1, 2, 3, 4]`.
-But how can we do the difference on the rust-side? So that a multi-argument
-payload is deserialized to a tuple and a vector of data is deserialized to a vec? Well, that is the user responsibility! They will know whether they are expecting a vec or tuple!
-So here is what we could do.
-First we need to know if the user provided a tuple or something else, prepare yourself—it's kind of hacky.
+In socket.io if you send a vec with `socket.emit("event", [1, 2, 3, 4])`, it will be serialized like this: `[event, [1, 2, 3, 4]]` but if you send variadics with `socket.emit("event", 1, 2, 3, 4)`, it will be serialized as: `[event, 1, 2, 3, 4]`.
+
+But how can we do the difference on the rust-side? So that a multi-argument payload is deserialized to a tuple and a vector of data is deserialized to a vec? Well, that is the user responsibility! They will know whether they are expecting a vec or tuple!
+So here is what we could do. First we need to know if the user provided a tuple or something else, prepare yourself—it's kind of hacky.
 
 `IsTupleSerde` has an implementation for serializer and deserializer that will simply error immediately with a boolean saying
 if the root type appears to be a tuple or not (without visiting anything or any data):
@@ -305,11 +308,12 @@ pub fn from_value<'de, T: Deserialize<'de>>(
 ```
 
 3. **Last but not least (actually it the most complex of the three issues), binary buffer reinjection**:
-As you saw before, with the visitor pattern we can completely separate the incoming data side with the mapped user types.
-That is what we are going to do! We are going to map serde maps (the binary placeholders) with user binary types.
 
-We can make a custom `BinaryVisitor` wrapper that will be instantiated for any bytes types on the user types side.
-But with a twist! The visitor can be visited by a map if the serde_json deserializer fall on a map for a corresponding binary type!
+As you saw before, with the visitor pattern we can completely separate the incoming data side with the mapped user types.
+This is what we are going to do! We are going to map serde maps (the binary placeholders) to user binary types.
+
+We can make a custom `BinaryVisitor` wrapper that will be instantiated for any user provided bytes types.
+But with a twist! The visitor can be visit a map if the serde_json deserializer fall on a map for a corresponding binary type!
 If so and that it is a placeholder: `{ "_placeholder": true, "num": 1 }` we can replace it with the corresponding binary present in our queue.
 ```rust
 struct BinaryVisitor<'a, V> {
@@ -401,7 +405,6 @@ We went from a two-phase dynamic system to a single-phase, type-safe, performant
 * External binary data re-injection.
 * First element (the event name) extracted for routing and skipped for user deserialization.
 * Differentiation between tuples and vecs to support deserializing from JS sent variadics.
-* And we have zero-copy deserialization! Don’t get me wrong—it’s still 'partial' zero-copy, since we're using JSON 😄. But for basic strings at least.
-
-Performance (because we all like the little thrill appearing when seeing perf improvements):
-We went from `600ns` for a really basic packet to `60ns!` so that is a x10 speed improvements.
+* Zero-copy deserialization! Don’t get me wrong—it’s still 'partial' zero-copy, since we're using JSON 😄. But for basic strings at least.
+* Performance (because we all like the little thrill appearing when seeing perf improvements):
+We reduced processing time for a basic packet from 600ns to just 60ns. Memory usage is also significantly more efficient, as no unnecessary allocations are made. Additionally, if the user chooses not to deserialize the incoming data—or if it doesn't match the expected user types—it simply isn't deserialized.
