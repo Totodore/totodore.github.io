@@ -1,0 +1,33 @@
+{% extends "feather/templates/index.html" %} {% block main %}
+<section class="container max-w-3xl mx-auto px-4 py-10">
+    <h1 class="text-4xl font-bold mb-8">{{ section.title }}</h1>
+
+    {% if section.description %}
+    <p class="text-lg text-gray-600 mb-6">{{ section.description }}</p>
+    {% endif %}
+
+    <ul class="space-y-8">
+        {% for page in section.pages %}
+        <li>
+            <article>
+                <h2 class="text-2xl font-semibold">
+                    <a
+                        href="{{ page.permalink | safe }}"
+                        class="text-blue-600 hover:underline"
+                    >
+                        {{ page.title }}
+                    </a>
+                </h2>
+                <time datetime="{{ page.date }}"
+                    >{{ page.date | date(format="%B %e, %Y") }}</time
+                >
+
+                {% if page.summary %}
+                <p class="mt-2 text-gray-700">{{ page.summary | safe }}</p>
+                {% endif %}
+            </article>
+        </li>
+        {% endfor %}
+    </ul>
+</section>
+{% endblock main %}
