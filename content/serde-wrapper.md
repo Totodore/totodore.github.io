@@ -1,7 +1,7 @@
 +++
 title = "Inside Serde: Building a Custom JSON Deserializer with binary support and more"
 date = 2025-05-08
-description = "This article explores how to extend serde in Rust by wrapping the JSON deserializer to support Socket.IO’s custom packet format — including variadic arguments, tuple-aware routing, and seamless reinjection of out-of-band binary payloads — all while keeping performance and type safety intact."
+description = "This article explores how to extend serde in Rust by wrapping the JSON deserializer to support Socket.IO’s custom packet format — including variadic arguments, event based routing, and seamless reinjection of out-of-band binary payloads — all while keeping performance and type safety intact."
 [taxonomies]
 tags = ["socketioxide", "rust"]
 +++
@@ -78,7 +78,7 @@ struct MyPayload {
 }
 fn my_bar_handler(payload: Data<MyPayload>) { }
 ```
-well, to summary we want the user to be able to specify the whole spectrum of serde possibilities without being limited by
+well, to summarize we want the user to be able to specify the whole spectrum of serde possibilities without being limited by
 socketioxide.
 
 ### Rust's Serde + JSON: Where It Breaks Down
@@ -116,15 +116,15 @@ They are provided in an adjacent vector.
 
 ### Can We Do Better? Harnessing Serde's Modularity
 
-The first emerging idea to solve this issue would be to write a custom JSON-parser that will partially decode our data. However that is a **terrible** idea for a **lot** of reasons.
+The first emerging idea to solve this issue would be to write a custom JSON-parser that will partially decode our data. However that's a **terrible** idea for **many** reasons.
 It's error prone, complex, the resulting code will be inefficent and insecure.
 
-Therefore, I wanted to stick with Serde’s ecosystem but needed more control, thanksfully serde is incredibly flexible.
+Therefore, I wanted to stick with Serde’s ecosystem but needed more control. Thanksfully serde is incredibly flexible.
 Here's what I explored:
 
 #### 1. Annotated Fields
 
-Users could put `#[serde(deserialize_with = "...")]` on binary fields to inject the binary buffer manually during deserialization. Unfortunately, Serde does not allow custom deserialization functions to access external state (like the binary buffer queue) in a clean way. Also this would force the user to think about specifying this.
+Users could put `#[serde(deserialize_with = "...")]` on binary fields to inject the binary buffer manually during deserialization. Unfortunately, Serde does not allow custom deserialization functions to access external state (like the binary buffer queue) in a clean way. This would also force the user to think about specifying this.
 And it doesn't solve the other issues such as the support for multiple arguments.
 
 #### 2. A Custom Serializer/Deserializer
@@ -190,7 +190,7 @@ impl<'de, T> serde::de::DeserializeSeed<'de> for FirstElement<T>
 }
 ```
 
-Then we can use our `FirstElement` in an easy way and it's even in a zero-copy way!
+Then we can easily use our `FirstElement` it's even in a zero-copy way!
 ```rust
 /// Extract the event name from a JSON array with the event being
 /// the first element: ["foo",...]
@@ -200,7 +200,7 @@ pub fn read_event(data: &str) -> serde_json::Result<&str> {
 }
 ```
 
-But when deserializing the real payload? How do you skip the event name? Well as we are wrapping the `serde_json` deserializer we can implement custom behavior such as skipping the first element of the root JSON array:
+But what about deserializing the real payload? How do you skip the event name? Well as we are wrapping the `serde_json` deserializer we can implement custom behavior such as skipping the first element of the root JSON array:
 
 We start by building a custom visitor wrapper to skip the first element in a sequence.
 ```rust
@@ -247,7 +247,7 @@ With this we don't need to deserialize our data to an intermediate dynamic value
 
 In socket.io if you send a vec with `socket.emit("event", [1, 2, 3, 4])`, it will be serialized like this: `[event, [1, 2, 3, 4]]` but if you send variadics with `socket.emit("event", 1, 2, 3, 4)`, it will be serialized as: `[event, 1, 2, 3, 4]`.
 
-But how can we do the difference on the rust-side? So that a multi-argument payload is deserialized to a tuple and a vector of data is deserialized to a vec? Well, that is the user responsibility! They will know whether they are expecting a vec or tuple!
+But how can we do the difference on the Rust-side? So that a multi-argument payload is deserialized to a tuple and a vector of data is deserialized to a vec? Well, that's the user responsibility. They will know whether they are expecting a vec or tuple!
 So here is what we could do. First we need to know if the user provided a tuple or something else, prepare yourself—it's kind of hacky.
 
 `IsTupleSerde` has an implementation for serializer and deserializer that will simply error immediately with a boolean saying
@@ -287,7 +287,7 @@ pub fn is_de_tuple<'de, T: serde::Deserialize<'de>>() -> bool {
 }
 ```
 
-And we use it
+And then use it
 ```rust
 pub fn from_value<'de, T: Deserialize<'de>>(
     data: &'de str,
@@ -406,5 +406,5 @@ We went from a two-phase dynamic system to a single-phase, type-safe, performant
 * First element (the event name) extracted for routing and skipped for user deserialization.
 * Differentiation between tuples and vecs to support deserializing from JS sent variadics.
 * Zero-copy deserialization! Don’t get me wrong—it’s still 'partial' zero-copy, since we're using JSON 😄. But for basic strings at least.
-* Performance (because we all like the little thrill appearing when seeing perf improvements):
+* Performance (because we all like the little thrill of perf improvements):
 We reduced processing time for a basic packet from 600ns to just 60ns. Memory usage is also significantly more efficient, as no unnecessary allocations are made. Additionally, if the user chooses not to deserialize the incoming data—or if it doesn't match the expected user types—it simply isn't deserialized.
