@@ -8,7 +8,7 @@ tags = ["socketioxide", "rust"]
 
 # TL;DR
 
-Socket.IO is a JavaScript library for real-time, bidirectional communication between clients and servers, built on top of WebSockets (with fallbacks) and featuring a custom event-based protocol.
+Socket.IO is a JavaScript library for real-time, bidirectional communication between clients and servers, built on top of WebSockets and featuring a custom event-based protocol.
 It uses a custom packet format that doesn’t map cleanly to Rust’s type system or serde's model — especially with variadic arguments and out-of-band binary payloads. This post walks through how I extended `serde_json` by wrapping its deserializer to:
 
 * Lazily extract the event name without full deserialization,
@@ -24,7 +24,7 @@ While working on [Socketioxide](https://github.com/totodore/socketioxide), an Ax
 
 ## The Socket.IO Protocol Quirks
 
-Socket.IO is a JavaScript-centric library built over multiple transports (WebSocket, HTTP long-polling) and comes with its own protocol. Under the hood, it's mostly JSON, but with some custom rules:
+Socket.IO comes with its own protocol. Under the hood, it's mostly JSON, but with some custom rules:
 
 * The **event name** is encoded as the **first argument** of a JSON array.
 * It supports **variadic arguments**, where any number of payloads follow the event name.
