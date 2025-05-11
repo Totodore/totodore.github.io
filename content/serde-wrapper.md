@@ -11,9 +11,9 @@ tags = ["socketioxide", "rust"]
 Socket.IO is a JavaScript library for real-time, bidirectional communication between clients and servers, built on top of WebSockets and featuring a custom event-based protocol.
 It uses a custom packet format that doesn’t map cleanly to Rust’s type system or serde's model — especially with variadic arguments and out-of-band binary payloads. This post walks through how I extended `serde_json` by wrapping its deserializer to:
 
-* Lazily extract the event name without full deserialization,
-* Automatically reinject binary payloads into placeholders,
-* Differentiate between tuples and vectors for correct variadic decoding,
+* Lazily extract the event name without full deserialization
+* Automatically reinject binary payloads into placeholders
+* Differentiate between tuples and vectors for correct variadic decoding
 * Eliminate the need for intermediate `Value` and two-phase parsing.
 
 The result is a clean, ergonomic, and performant single-phase deserialization system — with a 10× speedup on packet routing.
@@ -45,7 +45,7 @@ For example, the following packet:
 + <Buffer 03 04 ...>
 ```
 
-should should be parsed as a *binary event (packet id `5`)* with *`2` binary attachments* that is part of the *"/admin"* namespace. The event name is *"foo"* and the payload is the array ["message", <Buffer 01 02>, <Buffer 03 04>].
+should should be parsed as a *binary event (packet id `5`)* that is part of the *"/admin"* namespace with *`2` binary attachments*. The event name is *"foo"* and the payload is the sequence ["message", <Buffer 01 02 ...>, <Buffer 03 04 ...>].
 
 We want the user to be able to specify the whole spectrum of serde possibilities without being limited by socketioxide.
 
@@ -290,7 +290,7 @@ As you saw before, with the visitor pattern we can completely separate the incom
 This is what we are going to do! We are going to map serde maps (the binary placeholders) to user binary types.
 
 We can make a custom `BinaryVisitor` wrapper that will be instantiated for any user provided bytes types.
-But with a twist! The visitor can be visit a map if the serde_json deserializer fall on a map for a corresponding binary type!
+But with a twist! The visitor can visit a map if the `serde_json` deserializer fails on a map for a corresponding binary type!
 If so and that it is a placeholder: `{ "_placeholder": true, "num": 1 }` we can replace it with the corresponding binary present in our queue.
 
 ```rust
