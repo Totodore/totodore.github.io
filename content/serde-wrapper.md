@@ -30,59 +30,30 @@ Socket.IO comes with its own protocol. Under the hood, it's mostly JSON, but wit
 * It supports **variadic arguments**, where any number of payloads follow the event name.
 * **Binary data** isn’t inlined — instead, it's replaced by a placeholder and sent separately (e.g., in a WebSocket binary frame).
 
-*Packet format*:
+The *packet format* looks something like:
 
 ```
 <packet type>[<# of binary attachments>-][<namespace>,][<acknowledgment id>][JSON-stringified payload without binary]
 + binary attachments extracted
 ```
 
-Example with a simple binary event packet on the admin namespace:
+For example, the following packet:
+
 ```
-52-/admin,["foo","message",{"_placeholder":true,"num":0},{"_placeholder":true,"num":1}]
-+ <Buffer <01 02, ...>
-+ <Buffer <03 04, ...>
-```
-It should be parsed as:
-```
-packet_type = 5
-attachment_count = 2
-namespace = "/admin"
-event = "foo"
-payload = ["message",{"_placeholder":true,"num":0},{"_placeholder":true,"num":1}]
+52-/admin,["foo",["message",{"_placeholder":true,"num":0},{"_placeholder":true,"num":1}]]
++ <Buffer 01 02 ...>
++ <Buffer 03 04 ...>
 ```
 
-and we should be able to deserialize it like this:
+should should be parsed as a *binary event (packet id `5`)* with *`2` binary attachments* that is part of the *"/admin"* namespace. The event name is *"foo"* and the payload is the array ["message", <Buffer 01 02>, <Buffer 03 04>].
+
+We want the user to be able to specify the whole spectrum of serde possibilities without being limited by socketioxide.
+
+The final API for writing a handler with socketioxide looks like:
+
 ```rust
 fn my_foo_handler(payload: Data<(String, Bytes, Bytes)>) { }
 ```
-
-Or with a more complexe scenario:
-
-The following packet:
-```
-52-/admin,["bar",{"bins":[{"_placeholder":true,"num":0},{"_placeholder":true,"num":1}],"other_field": "foo"}]
-```
-
-should be parsed as:
-```
-packet_type = 5
-attachment_count = 2
-namespace = "/admin"
-event = "bar"
-payload = { "bins": [{"_placeholder":true, "num":0}, {"_placeholder":true, "num":1}], "other_field": "foo" }
-```
-and we should be able to deserialize it like this:
-```rust
-#[derive(Deserialize)]
-struct MyPayload {
-    bins: [Bytes; 2],
-    other_field: String
-}
-fn my_bar_handler(payload: Data<MyPayload>) { }
-```
-well, to summarize we want the user to be able to specify the whole spectrum of serde possibilities without being limited by
-socketioxide.
 
 # Serde: Where It Breaks Down
 
