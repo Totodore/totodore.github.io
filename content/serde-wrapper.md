@@ -55,12 +55,10 @@ The final API for writing a handler with socketioxide looks like:
 fn my_foo_handler(payload: Data<(String, Bytes, Bytes)>) { }
 ```
 
-# Serde: Where It Breaks Down
+# Serde: where it breaks down
 
 The first emerging idea to solve this issue would be to write a custom JSON-parser that will partially decode our data. However that's a **terrible** idea for **many** reasons.
 It's error prone, complex, the resulting code will be inefficent and insecure.
-
-Therefore, I wanted to stick with Serde’s ecosystem but needed more control. Thankfully serde is incredibly flexible.
 
 Rust and `serde_json` give us great tools to work with structured data, but they hit limitations in this protocol:
 
@@ -98,6 +96,8 @@ They are provided in an adjacent vector.
 Users could put `#[serde(deserialize_with = "...")]` on binary fields to inject the binary buffer manually during deserialization. Unfortunately, Serde does not allow custom deserialization functions to access external state (like the binary buffer queue) in a clean way. This would also force the user to think about specifying this.
 And it doesn't solve the other issues such as the support for multiple arguments.
 
+I wanted to stick with Serde’s ecosystem but needed more control. Thankfully serde is incredibly flexible.
+
 # A custom serializer/deserializer
 
 Eventually, I decided to write a custom deserializer that wraps `serde_json::Deserializer` — this gave me:
@@ -106,9 +106,9 @@ Eventually, I decided to write a custom deserializer that wraps `serde_json::Des
 2. **Stateful deserialization**: I can track and inject external binary buffers at the correct locations.
 3. **Precise handling of tuples vs arrays**: I can control how sequences are interpreted and enforce variadic behavior only where expected.
 
-Serde uses the [visitor pattern](https://en.wikipedia.org/wiki/Visitor_pattern) for deserialization which makes it extremely modular by separating the incoming data side from the type defintion side. This pattern will be used for all the following features.
+Serde uses the [visitor pattern] for deserialization which makes it extremely modular by separating the incoming data side from the type defintion side. This pattern will be used for all the following features.
 
----
+[visitor pattern]: https://en.wikipedia.org/wiki/Visitor_pattern
 
 ## 1. Lazy deserialization
 
@@ -226,6 +226,7 @@ So here is what we could do. First we need to know if the user provided a tuple 
 
 `IsTupleSerde` has an implementation for serializer and deserializer that will simply error immediately with a boolean saying
 if the root type appears to be a tuple or not (without visiting anything or any data):
+
 ```rust
 impl<'de> serde::Deserializer<'de> for IsTupleSerde {
     type Error = IsTupleSerdeError;
@@ -251,6 +252,7 @@ impl<'de> serde::Deserializer<'de> for IsTupleSerde {
 ```
 
 We can then make a little function to check if a type is a tuple or not:
+
 ```rust
 /// Returns true if the type is a tuple-like type according to the serde model.
 pub fn is_de_tuple<'de, T: serde::Deserialize<'de>>() -> bool {
@@ -262,6 +264,7 @@ pub fn is_de_tuple<'de, T: serde::Deserialize<'de>>() -> bool {
 ```
 
 And then use it
+
 ```rust
 pub fn from_value<'de, T: Deserialize<'de>>(
     data: &'de str,
@@ -281,7 +284,7 @@ pub fn from_value<'de, T: Deserialize<'de>>(
 }
 ```
 
-## 3. Binary buffer reinjection (the most complex)
+## 3. Binary buffer reinjection
 
 As you saw before, with the visitor pattern we can completely separate the incoming data side with the mapped user types.
 This is what we are going to do! We are going to map serde maps (the binary placeholders) to user binary types.
@@ -386,3 +389,4 @@ We went from a two-phase dynamic system to a single-phase, type-safe, performant
 * Zero-copy deserialization! Don’t get me wrong—it’s still 'partial' zero-copy, since we're using JSON 😄. But for basic strings at least.
 * Performance (because we all like the little thrill of perf improvements):
 We reduced processing time for a basic packet from 600ns to just 60ns. Memory usage is also significantly more efficient, as no unnecessary allocations are made. Additionally, if the user chooses not to deserialize the incoming data—or if it doesn't match the expected user types—it simply isn't deserialized.
+
