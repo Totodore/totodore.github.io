@@ -5,7 +5,9 @@ description = "This article explores how to extend serde in Rust by wrapping the
 [taxonomies]
 tags = ["socketioxide", "rust"]
 +++
-### TL;DR
+
+# TL;DR
+
 Socket.IO is a JavaScript library for real-time, bidirectional communication between clients and servers, built on top of WebSockets (with fallbacks) and featuring a custom event-based protocol.
 It uses a custom packet format that doesn’t map cleanly to Rust’s type system or serde's model — especially with variadic arguments and out-of-band binary payloads. This post walks through how I extended `serde_json` by wrapping its deserializer to:
 
@@ -16,11 +18,11 @@ It uses a custom packet format that doesn’t map cleanly to Rust’s type syste
 
 The result is a clean, ergonomic, and performant single-phase deserialization system — with a 10× speedup on packet routing.
 
-## Socketioxide introduction
+# Socketioxide introduction
 
 While working on [Socketioxide](https://github.com/totodore/socketioxide), an Axum-like Socket.IO server implementation in Rust, I encountered an issue I initially thought would be trivial. Spoiler: it wasn’t. It led me to rethink how `serde` works and ultimately dive deep into customizing it for the socketioxide needs.
 
-### The Socket.IO Protocol Quirks
+## The Socket.IO Protocol Quirks
 
 Socket.IO is a JavaScript-centric library built over multiple transports (WebSocket, HTTP long-polling) and comes with its own protocol. Under the hood, it's mostly JSON, but with some custom rules:
 
@@ -28,7 +30,8 @@ Socket.IO is a JavaScript-centric library built over multiple transports (WebSoc
 * It supports **variadic arguments**, where any number of payloads follow the event name.
 * **Binary data** isn’t inlined — instead, it's replaced by a placeholder and sent separately (e.g., in a WebSocket binary frame).
 
-#### Packet format
+*Packet format*:
+
 ```
 <packet type>[<# of binary attachments>-][<namespace>,][<acknowledgment id>][JSON-stringified payload without binary]
 + binary attachments extracted
@@ -81,7 +84,12 @@ fn my_bar_handler(payload: Data<MyPayload>) { }
 well, to summarize we want the user to be able to specify the whole spectrum of serde possibilities without being limited by
 socketioxide.
 
-### Rust's Serde + JSON: Where It Breaks Down
+# Serde: Where It Breaks Down
+
+The first emerging idea to solve this issue would be to write a custom JSON-parser that will partially decode our data. However that's a **terrible** idea for **many** reasons.
+It's error prone, complex, the resulting code will be inefficent and insecure.
+
+Therefore, I wanted to stick with Serde’s ecosystem but needed more control. Thankfully serde is incredibly flexible.
 
 Rust and `serde_json` give us great tools to work with structured data, but they hit limitations in this protocol:
 
@@ -90,7 +98,7 @@ Rust and `serde_json` give us great tools to work with structured data, but they
 * **Two-phase deserialization**: We must first parse the event to determine the correct handler, but the default approach fully deserializes the entire message too early, often unnecessarily.
 * **Memory fragmentation**: Using `serde_json::Value` for intermediate deserialization leads to lots of heap allocations.
 
-### Easiest solution: Dynamic Value Handling and two-phase deserialization
+## Naive solution: dynamic value handling and two-phase deserialization
 
 My first approach was to use `serde_json::Value` as a generic stand-in:
 
@@ -101,12 +109,12 @@ My first approach was to use `serde_json::Value` as a generic stand-in:
 
 This mostly worked and had the following trade-offs:
 
-#### Advantages
+*Advantages*
 
 * Simple and dynamic: Everything is handled at runtime.
 * No need for users to write custom serializers/deserializers.
 
-#### Drawbacks
+*Drawbacks*
 
 * Lacks precision: Can't distinguish tuples from vectors — a critical protocol mismatch.
 * No binary reinjection support: Once separated, placeholders and actual buffers are hard to correlate and rebind.
@@ -114,20 +122,12 @@ They are provided in an adjacent vector.
 * `Value` is heap-heavy: Parsing large messages fragments memory and reduces throughput.
 * Two-pass deserialization means doubling the amount of work.
 
-### Can We Do Better? Harnessing Serde's Modularity
-
-The first emerging idea to solve this issue would be to write a custom JSON-parser that will partially decode our data. However that's a **terrible** idea for **many** reasons.
-It's error prone, complex, the resulting code will be inefficent and insecure.
-
-Therefore, I wanted to stick with Serde’s ecosystem but needed more control. Thanksfully serde is incredibly flexible.
-Here's what I explored:
-
-#### 1. Annotated Fields
+## Annotated Fields
 
 Users could put `#[serde(deserialize_with = "...")]` on binary fields to inject the binary buffer manually during deserialization. Unfortunately, Serde does not allow custom deserialization functions to access external state (like the binary buffer queue) in a clean way. This would also force the user to think about specifying this.
 And it doesn't solve the other issues such as the support for multiple arguments.
 
-#### 2. A Custom Serializer/Deserializer
+# A custom serializer/deserializer
 
 Eventually, I decided to write a custom deserializer that wraps `serde_json::Deserializer` — this gave me:
 
@@ -139,7 +139,7 @@ Serde uses the [visitor pattern](https://en.wikipedia.org/wiki/Visitor_pattern) 
 
 ---
 
-1. **Lazy deserialization**:
+## 1. Lazy deserialization
 
 Here is a quick example on how we can deserialize only the first element of a sequence by using a `FirstElement` struct that will be a serde [visitor](https://serde.rs/impl-deserialize.html#the-visitor-trait) and a [deserialize seed](https://docs.rs/serde/latest/serde/de/trait.DeserializeSeed.html).
 Thanks to this we can map any kind of data with any type in a statically defined manner.
@@ -203,6 +203,7 @@ pub fn read_event(data: &str) -> serde_json::Result<&str> {
 But what about deserializing the real payload? How do you skip the event name? Well as we are wrapping the `serde_json` deserializer we can implement custom behavior such as skipping the first element of the root JSON array:
 
 We start by building a custom visitor wrapper to skip the first element in a sequence.
+
 ```rust
 /// This custom [`SeqVisitor`] implementation is used to skip the first element of the sequence.
 /// This is useful when the first element of the sequence is an event value that we want to ignore.
@@ -227,6 +228,7 @@ impl<'de, V: Visitor<'de>> Visitor<'de> for SeqVisitor<V> {
 ```
 
 and we can create our visitor in our deserializer wrapper:
+
 ```rust
 struct Deserializer<D> {
     inner: D,
@@ -241,9 +243,10 @@ impl<'de, D: de::Deserializer<'de>> de::Deserializer<'de> for Deserializer<D> {
 ...
 }
 ```
+
 With this we don't need to deserialize our data to an intermediate dynamic value, we can immediately find the corresponding event handler and deserialize the raw JSON string to a user provided type and skip the event.
 
-2. **Precise handling of tuples vs arrays for variadic arguments**:
+## 2. Precise handling of tuples vs arrays for variadic arguments
 
 In socket.io if you send a vec with `socket.emit("event", [1, 2, 3, 4])`, it will be serialized like this: `[event, [1, 2, 3, 4]]` but if you send variadics with `socket.emit("event", 1, 2, 3, 4)`, it will be serialized as: `[event, 1, 2, 3, 4]`.
 
@@ -307,7 +310,7 @@ pub fn from_value<'de, T: Deserialize<'de>>(
 }
 ```
 
-3. **Last but not least (actually it the most complex of the three issues), binary buffer reinjection**:
+## 3. Binary buffer reinjection (the most complex)
 
 As you saw before, with the visitor pattern we can completely separate the incoming data side with the mapped user types.
 This is what we are going to do! We are going to map serde maps (the binary placeholders) to user binary types.
@@ -315,6 +318,7 @@ This is what we are going to do! We are going to map serde maps (the binary plac
 We can make a custom `BinaryVisitor` wrapper that will be instantiated for any user provided bytes types.
 But with a twist! The visitor can be visit a map if the serde_json deserializer fall on a map for a corresponding binary type!
 If so and that it is a placeholder: `{ "_placeholder": true, "num": 1 }` we can replace it with the corresponding binary present in our queue.
+
 ```rust
 struct BinaryVisitor<'a, V> {
     binary_payloads: &'a mut VecDeque<Bytes>,
@@ -372,6 +376,7 @@ impl<'de, V: de::Visitor<'de>> Visitor<'de> for BinaryVisitor<'_, V> {
 ```
 
 Then we can use our `BinaryVisitor` wrapper for any call to `deserialize_bytes` or `deserialize_byte_buf`:
+
 ```rust
 struct Deserializer<'a, D> {
     inner: D,
@@ -398,6 +403,8 @@ impl<'de, D: de::Deserializer<'de>> de::Deserializer<'de> for Deserializer<'_, D
     }
 ...
 ```
+
+# Conclusion
 
 Et voilà! We have extended/twisted serde to do custom deserialization without writing any parsing code (I will happily let that for serde_json)!
 
