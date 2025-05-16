@@ -14,7 +14,7 @@ It uses a custom packet format that doesn’t map cleanly to Rust’s type syste
 * Lazily extract the event name without full deserialization
 * Automatically reinject binary payloads into placeholders
 * Differentiate between tuples and vectors for correct variadic decoding
-* Eliminate the need for intermediate `Value` and two-phase parsing.
+* Eliminate the need for intermediate [`Value`](https://docs.rs/serde_json/latest/serde_json/value/enum.Value.html) representation and two-phase parsing.
 
 The result is a clean, ergonomic, and performant single-phase deserialization system — with a 10× speedup on packet routing.
 
