@@ -45,7 +45,7 @@ For example, the following packet:
 + <Buffer 03 04 ...>
 ```
 
-should should be parsed as a *binary event (packet id `5`)* that is part of the *"/admin"* namespace with *`2` binary attachments*. The event name is *"foo"* and the payload is the sequence ["message", <Buffer 01 02 ...>, <Buffer 03 04 ...>].
+should should be parsed as a *binary event (packet id `5`)* that is part of the *"/admin"* namespace with *`2` binary attachments*. The event name is *"foo"* and the payload is the sequence `["message", <Buffer 01 02 ...>, <Buffer 03 04 ...>]`.
 
 We want the user to be able to specify the whole spectrum of serde possibilities without being limited by socketioxide.
 
