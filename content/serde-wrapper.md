@@ -358,6 +358,6 @@ We went from a two-phase dynamic system to a single-phase, type-safe, performant
 * External binary data re-injection.
 * First element (the event name) extracted for routing and skipped for user deserialization.
 * Differentiation between tuples and vecs to support deserializing from JS sent variadics.
-* Zero-copy deserialization! Don’t get me wrong—it’s still 'partial' zero-copy, since we're using JSON 😄. But for basic strings at least.
+* Zero-copy deserialization! Don’t get me wrong—it’s still 'partial' zero-copy, since we're using JSON. But for basic strings at least.
 * Performance (because we all like the little thrill of perf improvements):
 We reduced processing time for a basic packet from 600ns to just 60ns. Memory usage is also significantly more efficient, as no unnecessary allocations are made. Additionally, if the user chooses not to deserialize the incoming data—or if it doesn't match the expected user types—it simply isn't deserialized.
