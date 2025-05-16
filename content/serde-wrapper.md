@@ -79,10 +79,15 @@ My first approach was to use `serde_json::Value` as a generic stand-in:
 This mostly worked and had the following trade-offs:
 
 *Advantages*
-This approach is simple and dynamic, allowing everything to be handled at runtime without requiring complex compile-time decisions. Users are not burdened with writing their own custom serializers or deserializers, which makes it more accessible and reduces boilerplate.
+* Simple and dynamic: Everything is handled at runtime.
+* No need for users to write custom serializers/deserializers.
 
 *Drawbacks*
-This method lacks precision because it cannot distinguish between tuples and vectors, which is a critical mismatch with the Socket.IO protocol's expectations. It also does not support binary reinjection; once placeholders and binary buffers are separated, it becomes difficult to match and reinsert them in the correct place. Additionally, relying on serde_json::Value introduces heavy heap allocation, which leads to memory fragmentation and reduced throughput. Lastly, the need for two-phase deserialization effectively doubles the amount of work being done during parsing.
+* Lacks precision: Can't distinguish tuples from vectors — a critical protocol mismatch.
+* No binary reinjection support: Once separated, placeholders and actual buffers are hard to correlate and rebind.
+They are provided in an adjacent vector.
+* `Value` is heap-heavy: Parsing large messages fragments memory and reduces throughput.
+* Two-pass deserialization means doubling the amount of work.
 
 ## Annotated Fields
 
