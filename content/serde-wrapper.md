@@ -78,11 +78,11 @@ My first approach was to use `serde_json::Value` as a generic stand-in:
 
 This mostly worked and had the following trade-offs:
 
-*Advantages*
+### **Advantages**
 * Simple and dynamic: Everything is handled at runtime.
 * No need for users to write custom serializers/deserializers.
 
-*Drawbacks*
+### **Drawbacks**
 * Lacks precision: Can't distinguish tuples from vectors — a critical protocol mismatch.
 * No binary reinjection support: Once separated, placeholders and actual buffers are hard to correlate and rebind.
 They are provided in an adjacent vector.
