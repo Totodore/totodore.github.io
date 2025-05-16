@@ -79,17 +79,10 @@ My first approach was to use `serde_json::Value` as a generic stand-in:
 This mostly worked and had the following trade-offs:
 
 *Advantages*
-
-* Simple and dynamic: Everything is handled at runtime.
-* No need for users to write custom serializers/deserializers.
+This approach is simple and dynamic, allowing everything to be handled at runtime without requiring complex compile-time decisions. Users are not burdened with writing their own custom serializers or deserializers, which makes it more accessible and reduces boilerplate.
 
 *Drawbacks*
-
-* Lacks precision: Can't distinguish tuples from vectors — a critical protocol mismatch.
-* No binary reinjection support: Once separated, placeholders and actual buffers are hard to correlate and rebind.
-They are provided in an adjacent vector.
-* `Value` is heap-heavy: Parsing large messages fragments memory and reduces throughput.
-* Two-pass deserialization means doubling the amount of work.
+This method lacks precision because it cannot distinguish between tuples and vectors, which is a critical mismatch with the Socket.IO protocol's expectations. It also does not support binary reinjection; once placeholders and binary buffers are separated, it becomes difficult to match and reinsert them in the correct place. Additionally, relying on serde_json::Value introduces heavy heap allocation, which leads to memory fragmentation and reduced throughput. Lastly, the need for two-phase deserialization effectively doubles the amount of work being done during parsing.
 
 ## Annotated Fields
 
@@ -121,12 +114,6 @@ pub struct FirstElement<T>(std::marker::PhantomData<T>);
 
 /// We implement the Visitor for [`FirstElement`]. It will only be able to be visited by a sequence as we only expect this.
 impl<'de, T: serde::Deserialize<'de>> serde::de::Visitor<'de> for FirstElement<T> {
-    type Value = T;
-
-    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "a sequence in which we care about first element",)
-    }
-
     // We expect only a sequence, in any other case we will error something.
     fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
     where
@@ -145,15 +132,8 @@ impl<'de, T: serde::Deserialize<'de>> serde::de::Visitor<'de> for FirstElement<T
 }
 
 /// DeserializeSeed is the stateful form of Deserialize to hold the custom type we are deserializing to.
-impl<'de, T> serde::de::DeserializeSeed<'de> for FirstElement<T>
-    where T: serde::Deserialize<'de>
-    {
-    /// We are deserializing to T.
-    type Value = T;
-
-    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
-    where
-        D: serde::Deserializer<'de>,
+impl<'de, T: serde::Deserialize<'de>> serde::de::DeserializeSeed<'de> for FirstElement<T> {
+    fn deserialize<D: serde::Deserializer<'de>>(self, deserializer: D) -> Result<Self::Value, D::Error>
     {
         /// We are expecting a sequence of values.
         deserializer.deserialize_seq(self)
@@ -300,16 +280,8 @@ struct BinaryVisitor<'a, V> {
 }
 
 impl<'de, V: de::Visitor<'de>> Visitor<'de> for BinaryVisitor<'_, V> {
-    type Value = V::Value;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a binary payload")
-    }
-
     fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
-        use serde::de::Error;
         #[derive(serde::Deserialize)]
-        #[serde(untagged)]
         enum Val {
             Placeholder(bool),
             Num(usize),
@@ -389,4 +361,3 @@ We went from a two-phase dynamic system to a single-phase, type-safe, performant
 * Zero-copy deserialization! Don’t get me wrong—it’s still 'partial' zero-copy, since we're using JSON 😄. But for basic strings at least.
 * Performance (because we all like the little thrill of perf improvements):
 We reduced processing time for a basic packet from 600ns to just 60ns. Memory usage is also significantly more efficient, as no unnecessary allocations are made. Additionally, if the user chooses not to deserialize the incoming data—or if it doesn't match the expected user types—it simply isn't deserialized.
-
