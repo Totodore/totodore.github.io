@@ -45,7 +45,7 @@ For example, the following packet:
 + <Buffer 03 04 ...>
 ```
 
-should should be parsed as a *binary event (packet id `5`)* that is part of the *"/admin"* namespace with *`2` binary attachments*. The event name is *"foo"* and the payload is the sequence `["message", <Buffer 01 02 ...>, <Buffer 03 04 ...>]`.
+should be parsed as a *binary event (packet id `5`)* that is part of the *"/admin"* namespace with *`2` binary attachments*. The event name is *"foo"* and the payload is the sequence `["message", <Buffer 01 02 ...>, <Buffer 03 04 ...>]`.
 
 We want the user to be able to specify the whole spectrum of serde possibilities without being limited by socketioxide.
 
@@ -167,11 +167,6 @@ struct SeqVisitor<V> {
     inner: V,
 }
 impl<'de, V: Visitor<'de>> Visitor<'de> for SeqVisitor<V> {
-    type Value = V::Value;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a sequence")
-    }
     fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
     where
         A: serde::de::SeqAccess<'de>,
@@ -222,11 +217,11 @@ impl<'de> serde::Deserializer<'de> for IsTupleSerde {
         string unit unit_struct seq  map
         struct enum identifier ignored_any bytes byte_buf option
     }
-    /// The root type is not a tuple! We stop the deserializing process immediately by returning a stub error.
+    /// The root type is not a tuple! We stop the deserialization process immediately by returning a stub error.
     fn deserialize_any<V: Visitor<'de>>(self, _visitor: V) -> Result<V::Value, Self::Error> {
         Err(IsTupleSerdeError(false))
     }
-    /// The root type is a tuple! We stop the deserializing process immediately by returning a stub error.
+    /// The root type is a tuple! We stop the deserialization process immediately by returning a stub error.
     fn deserialize_tuple<V: Visitor<'de>>(
         self,
         _len: usize,
@@ -254,7 +249,8 @@ And then use it
 pub fn from_value<'de, T: Deserialize<'de>>(
     data: &'de str,
 ) -> serde_json::Result<T> {
-    /// We create a json deserialize and we wrap it we our own to implement custom behavior.
+    /// We create a json deserialize and we wrap it with our own
+    /// to override some behaviors.
     let inner = &mut serde_json::Deserializer::from_str(data);
     let de = Deserializer { inner };
 
