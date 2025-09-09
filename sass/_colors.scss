@@ -1,0 +1,43 @@
+body {
+    --contrast: #2b303b;
+    --contrast-weak: #3F4A5F;
+
+    --background: #ffffff;
+    --background-contrast: #f7f9fc;
+    --background-weak: #f4f5f7;
+    --background-hover: #ebebeb;
+
+    --border: rgba(33, 38, 51, 0.322);
+    --border-weak: #eceff3;
+
+    --accent: #ed1249;
+    --accent-trans: #ed124957;
+}
+
+@mixin dark() {
+    --contrast: #f7f9fc;
+    --contrast-weak: #e3e3e9;
+
+    --background: #111622;
+    --background-contrast: #fff;
+    --background-weak: #1f293f;
+    --background-hover: #2e3b58;
+
+    --border: rgba(255, 255, 255, 0.119);
+    --border-weak: #212633;
+
+    --accent: #ff6d91;
+    --accent-trans: #ff6d9167;
+}
+
+body {
+    &.dark {
+        @include dark;
+    }
+
+    @media (prefers-color-scheme: dark) {
+        &:not(.light) {
+            @include dark;
+        }
+    }
+}
