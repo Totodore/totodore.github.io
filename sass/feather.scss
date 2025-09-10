@@ -109,9 +109,9 @@ ol,
 #definition_popup {
     font-family: $font-body;
     font-weight: 300;
-    line-height: 1.5;
+    line-height: 1.7;
     font-size: 1em;
-    text-align: start;
+    text-align: justify;
 }
 
 ul,
@@ -123,7 +123,8 @@ ol {
     @media (max-width: $break-small) {
         list-style-position: inside;
     }
-    li>ul, li>ol {
+    li > ul,
+    li > ol {
         margin-left: 1em !important;
     }
 }
@@ -262,7 +263,8 @@ section {
             font-size: 1em;
         }
 
-        >p, .footnote-definition>p {
+        > p,
+        .footnote-definition > p {
             margin: 1em 0;
         }
     }
@@ -468,7 +470,8 @@ img.loaded {
     width: 2em;
     height: 2em;
 
-    &:hover, &:active {
+    &:hover,
+    &:active {
         background: var(--contrast-weak);
         color: var(--background);
     }

@@ -22,7 +22,7 @@ The result is a clean, ergonomic, and performant single-phase deserialization sy
 
 While working on [Socketioxide](https://github.com/totodore/socketioxide), an Axum-like Socket.IO server implementation in Rust, I encountered an issue I initially thought would be trivial. Spoiler: it wasn’t. It led me to rethink how `serde` works and ultimately dive deep into customizing it for the socketioxide needs.
 
-## The Socket.IO Protocol Quirks
+## &nbsp;&nbsp;&nbsp;&nbsp; The Socket.IO Protocol Quirks
 
 Socket.IO comes with its own protocol. Under the hood, it's mostly JSON, but with some custom rules:
 
@@ -67,7 +67,7 @@ Rust and `serde_json` give us great tools to work with structured data, but they
 * **Two-phase deserialization**: We must first parse the event to determine the correct handler, but the default approach fully deserializes the entire message too early, often unnecessarily.
 * **Memory fragmentation**: Using `serde_json::Value` for intermediate deserialization leads to lots of heap allocations.
 
-## Naive solution: dynamic value handling and two-phase deserialization
+## &nbsp;&nbsp;&nbsp;&nbsp; 1. Naive solution: dynamic value handling and two-phase deserialization
 
 My first approach was to use `serde_json::Value` as a generic stand-in:
 
@@ -89,29 +89,35 @@ They are provided in an adjacent vector.
 * `Value` is heap-heavy: Parsing large messages fragments memory and reduces throughput.
 * Two-pass deserialization means doubling the amount of work.
 
-## Annotated Fields
+## &nbsp;&nbsp;&nbsp;&nbsp; 2. Another naive solution: annotated fields
 
 Users could put `#[serde(deserialize_with = "...")]` on binary fields to inject the binary buffer manually during deserialization. Unfortunately, Serde does not allow custom deserialization functions to access external state (like the binary buffer queue) in a clean way. This would also force the user to think about specifying this.
 And it doesn't solve the other issues such as the support for multiple arguments.
 
 I wanted to stick with Serde’s ecosystem but needed more control. Thankfully serde is incredibly flexible.
 
-# A custom serializer/deserializer
+# The optimal solution: a custom serializer/deserializer
+
+Hence I had three main issues:
+* Tuples/arrays should be used for variadics and `Vec` for sequences,
+an issue induced by the use of an intermediate representation like `serde_json::Value` which makes it impossible to differentiate, as they are both represented as sequences.
+* Binary payload reinjection should happen at any level without iterating over an intermediate representation.
+* In order to get rid of the intermediate representation, the event name should be deserialized in a lazy manner without parsing the full payload up front.
 
 Eventually, I decided to write a custom deserializer that wraps `serde_json::Deserializer` — this gave me:
 
 1. **Lazy deserialization**: I can extract just the event name without parsing the full payload up front, and defer deeper parsing until we’ve routed the event.
-2. **Stateful deserialization**: I can track and inject external binary buffers at the correct locations.
-3. **Precise handling of tuples vs arrays**: I can control how sequences are interpreted and enforce variadic behavior only where expected.
+2. **Precise handling of tuples vs arrays**: I can control how sequences are interpreted and enforce variadic behavior only where expected.
+3. **Binary buffer reinjection**: I can track and inject external binary buffers at the correct locations with stateful deserialization.
 
 Serde uses the [visitor pattern] for deserialization which makes it extremely modular by separating the incoming data side from the type defintion side. This pattern will be used for all the following features.
 
 [visitor pattern]: https://en.wikipedia.org/wiki/Visitor_pattern
 
-## 1. Lazy deserialization
+## &nbsp;&nbsp;&nbsp;&nbsp; 1. Lazy deserialization
 
 Here is a quick example on how we can deserialize only the first element of a sequence by using a `FirstElement` struct that will be a serde [visitor](https://serde.rs/impl-deserialize.html#the-visitor-trait) and a [deserialize seed](https://docs.rs/serde/latest/serde/de/trait.DeserializeSeed.html).
-Thanks to this we can map any kind of data with any type in a statically defined manner.
+This allows us to map any kind of data to any type in a statically defined manner.
 
 ```rust
 /// A seed that can be used to deserialize only the 1st element of a sequence
@@ -146,7 +152,7 @@ impl<'de, T: serde::Deserialize<'de>> serde::de::DeserializeSeed<'de> for FirstE
 }
 ```
 
-Then we can easily use our `FirstElement` it's even in a zero-copy way!
+Then we can easily use our `FirstElement`. It's even in a zero-copy way!
 ```rust
 /// Extract the event name from a JSON array with the event being
 /// the first element: ["foo",...]
@@ -156,7 +162,7 @@ pub fn read_event(data: &str) -> serde_json::Result<&str> {
 }
 ```
 
-But what about deserializing the real payload? How do you skip the event name? Well as we are wrapping the `serde_json` deserializer we can implement custom behavior such as skipping the first element of the root JSON array:
+But what about deserializing the real payload? How do you skip the event name? Well, as we are wrapping the `serde_json` deserializer, we can implement custom behavior such as skipping the first element of the root JSON array:
 
 We start by building a custom visitor wrapper to skip the first element in a sequence.
 
@@ -178,7 +184,7 @@ impl<'de, V: Visitor<'de>> Visitor<'de> for SeqVisitor<V> {
 }
 ```
 
-and we can create our visitor in our deserializer wrapper:
+And we can create our visitor in our deserializer wrapper.
 
 ```rust
 struct Deserializer<D> {
@@ -197,11 +203,14 @@ impl<'de, D: de::Deserializer<'de>> de::Deserializer<'de> for Deserializer<D> {
 
 With this we don't need to deserialize our data to an intermediate dynamic value, we can immediately find the corresponding event handler and deserialize the raw JSON string to a user provided type and skip the event.
 
-## 2. Precise handling of tuples vs arrays for variadic arguments
+## &nbsp;&nbsp;&nbsp;&nbsp; 2. Precise handling of tuples vs arrays for variadic arguments
 
-In socket.io if you send a vec with `socket.emit("event", [1, 2, 3, 4])`, it will be serialized like this: `[event, [1, 2, 3, 4]]` but if you send variadics with `socket.emit("event", 1, 2, 3, 4)`, it will be serialized as: `[event, 1, 2, 3, 4]`.
+In Socket.IO if you send a vec with `socket.emit("event", [1, 2, 3, 4])`, it will be serialized like this: `[event, [1, 2, 3, 4]]` but if you send variadics with `socket.emit("event", 1, 2, 3, 4)`, it will be serialized as: `[event, 1, 2, 3, 4]`.
 
-But how can we do the difference on the Rust-side? So that a multi-argument payload is deserialized to a tuple and a vector of data is deserialized to a vec? Well, that's the user responsibility. They will know whether they are expecting a vec or tuple!
+But, how can we do the difference on the Rust-side? So that a multi-argument payload is deserialized to a tuple and a vector of data is deserialized to a vec?
+
+Well, that's the user responsibility. They will know whether they are expecting a vec or tuple!
+
 So here is what we could do. First we need to know if the user provided a tuple or something else, prepare yourself—it's kind of hacky.
 
 `IsTupleSerde` has an implementation for serializer and deserializer that will simply error immediately with a boolean saying
@@ -243,7 +252,7 @@ pub fn is_de_tuple<'de, T: serde::Deserialize<'de>>() -> bool {
 }
 ```
 
-And then use it
+And then use it.
 
 ```rust
 pub fn from_value<'de, T: Deserialize<'de>>(
@@ -265,14 +274,15 @@ pub fn from_value<'de, T: Deserialize<'de>>(
 }
 ```
 
-## 3. Binary buffer reinjection
+## &nbsp;&nbsp;&nbsp;&nbsp; 3. Binary buffer reinjection
 
 As you saw before, with the visitor pattern we can completely separate the incoming data side with the mapped user types.
 This is what we are going to do! We are going to map serde maps (the binary placeholders) to user binary types.
 
 We can make a custom `BinaryVisitor` wrapper that will be instantiated for any user provided bytes types.
-But with a twist! The visitor can visit a map if the `serde_json` deserializer fails on a map for a corresponding binary type!
-If so and that it is a placeholder: `{ "_placeholder": true, "num": 1 }` we can replace it with the corresponding binary present in our queue.
+But with a twist! When `serde_json` will ask our binary visitor to visit a map, rather than bailing out, it will happily accept it and:
+* check that it is a placeholder, e.g.: `{ "_placeholder": true, "num": 1 }`.
+* take the corresponding binary from the queue and return it.
 
 ```rust
 struct BinaryVisitor<'a, V> {
