@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta http-equiv="content-type" content="text/html; charset=utf-8">
+
+    <!-- Enable responsiveness on mobile devices-->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1">
+
+    <title>Théodore&#x27;s blog</title>
+    <meta name="description" content="This article explores how to extend serde in Rust by wrapping the JSON deserializer to support Socket.IO’s custom packet format — including variadic arguments, event based routing, and seamless reinjection of out-of-band binary payloads — all while keeping performance and type safety intact.">
+
+    
+    
+
+    
+<meta property="og:title" content="Inside Serde: Building a Custom JSON Deserializer with binary support and more">
+<meta property="og:description" content="This article explores how to extend serde in Rust by wrapping the JSON deserializer to support Socket.IO’s custom packet format — including variadic arguments, event based routing, and seamless reinjection of out-of-band binary payloads — all while keeping performance and type safety intact.">
+<meta property="og:url" content="https:&#x2F;&#x2F;totodore.github.io&#x2F;serde-wrapper&#x2F;">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Théodore&#x27;s blog">
+
+
+
+    <!-- css -->
+    <noscript>
+        <style>
+            .theme-switcher {
+                display: none;
+            }
+        </style>
+    </noscript>
+    <link rel="stylesheet" href="/reset.css">
+    <link rel="stylesheet" href="/feather.css">
+    
+    
+    <link rel="stylesheet" href="/syntax-theme-light.css" media="screen" />
+    <link rel="stylesheet" href="/syntax-theme-dark.css" media="screen and (prefers-color-scheme: dark)" />
+    
+    
+
+    <link rel="stylesheet" id="syntax" />
+
+    
+
+    
+
+    
+    
+</head>
+
+<body >
+    <div class="root">
+
+        <nav>
+            <div class="flex padded">
+                <div class="flex fill vcenter">
+                    <a href="/">
+                        <h4>Théodore&#x27;s blog</h4>
+                    </a>
+                </div>
+                
+                <button class="theme-switcher"></button>
+                
+            </div>
+            
+        </nav>
+
+
+
+        
+<div class='container'>
+	<section class="post">
+		<div class="title-and-info">
+			<h2>Inside Serde: Building a Custom JSON Deserializer with binary support and more</h2>
+			<div class="info">
+				<span>2025 May 08</span>
+
+				
+                    <span class='divider' />
+                    <a href="https:&#x2F;&#x2F;github.com&#x2F;totodore" target="_blank">Github</a>
+				
+
+				
+			</div>
+		</div>
+		<article>
+			
+			
+			
+			
+
+			
+
+
+			<h1 id="tl-dr">TL;DR</h1>
+<p>Socket.IO is a JavaScript library for real-time, bidirectional communication between clients and servers, built on top of WebSockets and featuring a custom event-based protocol.
+It uses a custom packet format that doesn’t map cleanly to Rust’s type system or serde's model — especially with variadic arguments and out-of-band binary payloads. This post walks through how I extended <code>serde_json</code> by wrapping its deserializer to:</p>
+<ul>
+<li>Lazily extract the event name without full deserialization</li>
+<li>Automatically reinject binary payloads into placeholders</li>
+<li>Differentiate between tuples and vectors for correct variadic decoding</li>
+<li>Eliminate the need for intermediate <a href="https://docs.rs/serde_json/latest/serde_json/value/enum.Value.html"><code>Value</code></a> representation and two-phase parsing.</li>
+</ul>
+<p>The result is a clean, ergonomic, and performant single-phase deserialization system — with a 10× speedup on packet routing.</p>
+<h1 id="socketioxide-introduction">Socketioxide introduction</h1>
+<p>While working on <a href="https://github.com/totodore/socketioxide">Socketioxide</a>, an Axum-like Socket.IO server implementation in Rust, I encountered an issue I initially thought would be trivial. Spoiler: it wasn’t. It led me to rethink how <code>serde</code> works and ultimately dive deep into customizing it for the socketioxide needs.</p>
+<h2 id="the-socket-io-protocol-quirks">     The Socket.IO Protocol Quirks</h2>
+<p>Socket.IO comes with its own protocol. Under the hood, it's mostly JSON, but with some custom rules:</p>
+<ul>
+<li>The <strong>event name</strong> is encoded as the <strong>first argument</strong> of a JSON array.</li>
+<li>It supports <strong>variadic arguments</strong>, where any number of payloads follow the event name.</li>
+<li><strong>Binary data</strong> isn’t inlined — instead, it's replaced by a placeholder and sent separately (e.g., in a WebSocket binary frame).</li>
+</ul>
+<p>The <em>packet format</em> looks something like:</p>
+<pre style="background-color:#0f1419;color:#bfbab0;"><code><span>&lt;packet type&gt;[&lt;# of binary attachments&gt;-][&lt;namespace&gt;,][&lt;acknowledgment id&gt;][JSON-stringified payload without binary]
+</span><span>+ binary attachments extracted
+</span></code></pre>
+<p>For example, the following packet:</p>
+<pre style="background-color:#0f1419;color:#bfbab0;"><code><span>52-/admin,[&quot;foo&quot;,[&quot;message&quot;,{&quot;_placeholder&quot;:true,&quot;num&quot;:0},{&quot;_placeholder&quot;:true,&quot;num&quot;:1}]]
+</span><span>+ &lt;Buffer 01 02 ...&gt;
+</span><span>+ &lt;Buffer 03 04 ...&gt;
+</span></code></pre>
+<p>should be parsed as a <em>binary event (packet id <code>5</code>)</em> that is part of the <em>"/admin"</em> namespace with <em><code>2</code> binary attachments</em>. The event name is <em>"foo"</em> and the payload is the sequence <code>["message", &lt;Buffer 01 02 ...&gt;, &lt;Buffer 03 04 ...&gt;]</code>.</p>
+<p>We want the user to be able to specify the whole spectrum of serde possibilities without being limited by socketioxide.</p>
+<p>The final API for writing a handler with socketioxide looks like:</p>
+<pre data-lang="rust" style="background-color:#0f1419;color:#bfbab0;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#ff7733;">fn </span><span style="color:#ffb454;">my_foo_handler</span><span>(</span><span style="color:#f29718;">payload</span><span style="color:#bfbab0cc;">: </span><span>Data&lt;(String, Bytes, Bytes)&gt;) { }
+</span></code></pre>
+<h1 id="serde-where-it-breaks-down">Serde: where it breaks down</h1>
+<p>The first emerging idea to solve this issue would be to write a custom JSON-parser that will partially decode our data. However that's a <strong>terrible</strong> idea for <strong>many</strong> reasons.
+It's error prone, complex, the resulting code will be inefficent and insecure.</p>
+<p>Rust and <code>serde_json</code> give us great tools to work with structured data, but they hit limitations in this protocol:</p>
+<ul>
+<li><strong>Tuple vs Vec ambiguity</strong>: A tuple (e.g. <code>(i32, String)</code>) and a vector (<code>Vec&lt;Value&gt;</code>) are both serialized to a <code>Value::Array</code>, making it hard to distinguish variadic arguments properly. Ideally, we’d treat tuples as argument lists, but not expand vectors.</li>
+<li><strong>Binary placeholders</strong>: There’s no clean way to inject binary buffers back into their correct place in the deserialized structure.</li>
+<li><strong>Two-phase deserialization</strong>: We must first parse the event to determine the correct handler, but the default approach fully deserializes the entire message too early, often unnecessarily.</li>
+<li><strong>Memory fragmentation</strong>: Using <code>serde_json::Value</code> for intermediate deserialization leads to lots of heap allocations.</li>
+</ul>
+<h2 id="1-naive-solution-dynamic-value-handling-and-two-phase-deserialization">     1. Naive solution: dynamic value handling and two-phase deserialization</h2>
+<p>My first approach was to use <code>serde_json::Value</code> as a generic stand-in:</p>
+<ul>
+<li>Extract the event name from the first element of the array.</li>
+<li>Recursively walk the structure to locate binary placeholders and associate them with actual payloads.</li>
+<li>Represent remaining arguments as a <code>Vec&lt;Value&gt;</code>.</li>
+<li>Deserialize the <code>serde_json::Value</code> to the user provided type.</li>
+</ul>
+<p>This mostly worked and had the following trade-offs:</p>
+<h3 id="advantages"><strong>Advantages</strong></h3>
+<ul>
+<li>Simple and dynamic: Everything is handled at runtime.</li>
+<li>No need for users to write custom serializers/deserializers.</li>
+</ul>
+<h3 id="drawbacks"><strong>Drawbacks</strong></h3>
+<ul>
+<li>Lacks precision: Can't distinguish tuples from vectors — a critical protocol mismatch.</li>
+<li>No binary reinjection support: Once separated, placeholders and actual buffers are hard to correlate and rebind.
+They are provided in an adjacent vector.</li>
+<li><code>Value</code> is heap-heavy: Parsing large messages fragments memory and reduces throughput.</li>
+<li>Two-pass deserialization means doubling the amount of work.</li>
+</ul>
+<h2 id="2-another-naive-solution-annotated-fields">     2. Another naive solution: annotated fields</h2>
+<p>Users could put <code>#[serde(deserialize_with = "...")]</code> on binary fields to inject the binary buffer manually during deserialization. Unfortunately, Serde does not allow custom deserialization functions to access external state (like the binary buffer queue) in a clean way. This would also force the user to think about specifying this.
+And it doesn't solve the other issues such as the support for multiple arguments.</p>
+<p>I wanted to stick with Serde’s ecosystem but needed more control. Thankfully serde is incredibly flexible.</p>
+<h1 id="the-optimal-solution-a-custom-serializer-deserializer">The optimal solution: a custom serializer/deserializer</h1>
+<p>Hence I had three main issues:</p>
+<ul>
+<li>Tuples/arrays should be used for variadics and <code>Vec</code> for sequences,
+an issue induced by the use of an intermediate representation like <code>serde_json::Value</code> which makes it impossible to differentiate, as they are both represented as sequences.</li>
+<li>Binary payload reinjection should happen at any level without iterating over an intermediate representation.</li>
+<li>In order to get rid of the intermediate representation, the event name should be deserialized in a lazy manner without parsing the full payload up front.</li>
+</ul>
+<p>Eventually, I decided to write a custom deserializer that wraps <code>serde_json::Deserializer</code> — this gave me:</p>
+<ol>
+<li><strong>Lazy deserialization</strong>: I can extract just the event name without parsing the full payload up front, and defer deeper parsing until we’ve routed the event.</li>
+<li><strong>Precise handling of tuples vs arrays</strong>: I can control how sequences are interpreted and enforce variadic behavior only where expected.</li>
+<li><strong>Binary buffer reinjection</strong>: I can track and inject external binary buffers at the correct locations with stateful deserialization.</li>
+</ol>
+<p>Serde uses the <a href="https://en.wikipedia.org/wiki/Visitor_pattern">visitor pattern</a> for deserialization which makes it extremely modular by separating the incoming data side from the type defintion side. This pattern will be used for all the following features.</p>
+<h2 id="1-lazy-deserialization">     1. Lazy deserialization</h2>
+<p>Here is a quick example on how we can deserialize only the first element of a sequence by using a <code>FirstElement</code> struct that will be a serde <a href="https://serde.rs/impl-deserialize.html#the-visitor-trait">visitor</a> and a <a href="https://docs.rs/serde/latest/serde/de/trait.DeserializeSeed.html">deserialize seed</a>.
+This allows us to map any kind of data to any type in a statically defined manner.</p>
+<pre data-lang="rust" style="background-color:#0f1419;color:#bfbab0;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="font-style:italic;color:#5c6773;">/// A seed that can be used to deserialize only the 1st element of a sequence
+</span><span style="color:#ff7733;">pub struct </span><span style="color:#59c2ff;">FirstElement</span><span>&lt;T&gt;(std</span><span style="color:#f29668;">::</span><span>marker</span><span style="color:#f29668;">::</span><span>PhantomData&lt;T&gt;)</span><span style="color:#bfbab0cc;">;
+</span><span>
+</span><span style="font-style:italic;color:#5c6773;">/// We implement the Visitor for [`FirstElement`]. It will only be able to be visited by a sequence as we only expect this.
+</span><span style="color:#ff7733;">impl</span><span>&lt;</span><span style="color:#ff7733;">&#39;de</span><span>, T</span><span style="color:#bfbab0cc;">: </span><span>serde</span><span style="color:#f29668;">::</span><span>Deserialize&lt;</span><span style="color:#ff7733;">&#39;de</span><span>&gt;&gt; serde</span><span style="color:#f29668;">::</span><span>de</span><span style="color:#f29668;">::</span><span>Visitor&lt;</span><span style="color:#ff7733;">&#39;de</span><span>&gt; </span><span style="color:#ff7733;">for </span><span style="color:#59c2ff;">FirstElement</span><span>&lt;T&gt; {
+</span><span>    </span><span style="font-style:italic;color:#5c6773;">// We expect only a sequence, in any other case we will error something.
+</span><span>    </span><span style="color:#ff7733;">fn </span><span style="color:#ffb454;">visit_seq</span><span>&lt;A&gt;(</span><span style="color:#f29718;">self</span><span>, </span><span style="color:#ff7733;">mut </span><span style="color:#f29718;">seq</span><span style="color:#bfbab0cc;">:</span><span> A) </span><span style="color:#bfbab0cc;">-&gt; </span><span style="font-style:italic;color:#39bae6;">Result</span><span>&lt;</span><span style="color:#ff7733;">Self</span><span style="color:#f29668;">::</span><span>Value, </span><span style="color:#ff7733;">A</span><span style="color:#f29668;">::</span><span>Error&gt;
+</span><span>    </span><span style="color:#ff7733;">where
+</span><span>        A</span><span style="color:#bfbab0cc;">: </span><span>serde</span><span style="color:#f29668;">::</span><span>de</span><span style="color:#f29668;">::</span><span>SeqAccess&lt;</span><span style="color:#ff7733;">&#39;de</span><span>&gt;,
+</span><span>    {
+</span><span>        </span><span style="color:#ff7733;">use </span><span>serde</span><span style="color:#f29668;">::</span><span>de</span><span style="color:#f29668;">::</span><span>Error</span><span style="color:#bfbab0cc;">;
+</span><span>        </span><span style="color:#ff7733;">let</span><span> data </span><span style="color:#f29668;">=</span><span> seq
+</span><span>            </span><span style="color:#f29668;">.</span><span>next_element</span><span style="color:#f29668;">::</span><span>&lt;T&gt;()</span><span style="color:#f29668;">?
+</span><span>            </span><span style="color:#f29668;">.</span><span style="color:#f07178;">ok_or</span><span>(A</span><span style="color:#f29668;">::</span><span>Error</span><span style="color:#f29668;">::</span><span>custom(</span><span style="color:#c2d94c;">&quot;first element not found&quot;</span><span>))</span><span style="color:#bfbab0cc;">;
+</span><span>
+</span><span>        </span><span style="font-style:italic;color:#5c6773;">// Consume the rest of the sequence
+</span><span>        </span><span style="color:#ff7733;">while</span><span> seq</span><span style="color:#f29668;">.</span><span>next_element</span><span style="color:#f29668;">::</span><span>&lt;serde</span><span style="color:#f29668;">::</span><span>de</span><span style="color:#f29668;">::</span><span>IgnoredAny&gt;()</span><span style="color:#f29668;">?.</span><span style="color:#f07178;">is_some</span><span>() {}
+</span><span>
+</span><span>        data
+</span><span>    }
+</span><span>}
+</span><span>
+</span><span style="font-style:italic;color:#5c6773;">/// DeserializeSeed is the stateful form of Deserialize to hold the custom type we are deserializing to.
+</span><span style="color:#ff7733;">impl</span><span>&lt;</span><span style="color:#ff7733;">&#39;de</span><span>, T</span><span style="color:#bfbab0cc;">: </span><span>serde</span><span style="color:#f29668;">::</span><span>Deserialize&lt;</span><span style="color:#ff7733;">&#39;de</span><span>&gt;&gt; serde</span><span style="color:#f29668;">::</span><span>de</span><span style="color:#f29668;">::</span><span>DeserializeSeed&lt;</span><span style="color:#ff7733;">&#39;de</span><span>&gt; </span><span style="color:#ff7733;">for </span><span style="color:#59c2ff;">FirstElement</span><span>&lt;T&gt; {
+</span><span>    </span><span style="color:#ff7733;">fn </span><span style="color:#ffb454;">deserialize</span><span>&lt;D</span><span style="color:#bfbab0cc;">: </span><span>serde</span><span style="color:#f29668;">::</span><span>Deserializer&lt;</span><span style="color:#ff7733;">&#39;de</span><span>&gt;&gt;(</span><span style="color:#f29718;">self</span><span>, </span><span style="color:#f29718;">deserializer</span><span style="color:#bfbab0cc;">:</span><span> D) </span><span style="color:#bfbab0cc;">-&gt; </span><span style="font-style:italic;color:#39bae6;">Result</span><span>&lt;</span><span style="color:#ff7733;">Self</span><span style="color:#f29668;">::</span><span>Value, </span><span style="color:#ff7733;">D</span><span style="color:#f29668;">::</span><span>Error&gt;
+</span><span>    {
+</span><span>        </span><span style="font-style:italic;color:#5c6773;">/// We are expecting a sequence of values.
+</span><span>        deserializer</span><span style="color:#f29668;">.</span><span style="color:#f07178;">deserialize_seq</span><span>(</span><span style="font-style:italic;color:#39bae6;">self</span><span>)
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>Then we can easily use our <code>FirstElement</code>. It's even in a zero-copy way!</p>
+<pre data-lang="rust" style="background-color:#0f1419;color:#bfbab0;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="font-style:italic;color:#5c6773;">/// Extract the event name from a JSON array with the event being
+</span><span style="font-style:italic;color:#5c6773;">/// the first element: [&quot;foo&quot;,...]
+</span><span style="color:#ff7733;">pub fn </span><span style="color:#ffb454;">read_event</span><span>(</span><span style="color:#f29718;">data</span><span style="color:#bfbab0cc;">: </span><span style="color:#f29668;">&amp;</span><span style="color:#ff7733;">str</span><span>) </span><span style="color:#bfbab0cc;">-&gt; </span><span>serde_json</span><span style="color:#f29668;">::</span><span style="font-style:italic;color:#39bae6;">Result</span><span>&lt;</span><span style="color:#f29668;">&amp;</span><span style="color:#ff7733;">str</span><span>&gt; {
+</span><span>    </span><span style="color:#ff7733;">let mut</span><span> de </span><span style="color:#f29668;">= </span><span>serde_json</span><span style="color:#f29668;">::</span><span>Deserializer</span><span style="color:#f29668;">::</span><span>from_str(data)</span><span style="color:#bfbab0cc;">;
+</span><span>    FirstElement</span><span style="color:#f29668;">::</span><span>&lt;</span><span style="color:#f29668;">&amp;</span><span style="color:#ff7733;">str</span><span>&gt;</span><span style="color:#f29668;">::</span><span>default()</span><span style="color:#f29668;">.</span><span style="color:#f07178;">deserialize</span><span>(</span><span style="color:#f29668;">&amp;</span><span style="color:#ff7733;">mut</span><span> de)
+</span><span>}
+</span></code></pre>
+<p>But what about deserializing the real payload? How do you skip the event name? Well, as we are wrapping the <code>serde_json</code> deserializer, we can implement custom behavior such as skipping the first element of the root JSON array:</p>
+<p>We start by building a custom visitor wrapper to skip the first element in a sequence.</p>
+<pre data-lang="rust" style="background-color:#0f1419;color:#bfbab0;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="font-style:italic;color:#5c6773;">/// This custom [`SeqVisitor`] implementation is used to skip the first element of the sequence.
+</span><span style="font-style:italic;color:#5c6773;">/// This is useful when the first element of the sequence is an event value that we want to ignore.
+</span><span style="color:#ff7733;">struct </span><span style="color:#59c2ff;">SeqVisitor</span><span>&lt;V&gt; {
+</span><span>    inner</span><span style="color:#bfbab0cc;">:</span><span> V,
+</span><span>}
+</span><span style="color:#ff7733;">impl</span><span>&lt;</span><span style="color:#ff7733;">&#39;de</span><span>, V</span><span style="color:#bfbab0cc;">: </span><span>Visitor&lt;</span><span style="color:#ff7733;">&#39;de</span><span>&gt;&gt; Visitor&lt;</span><span style="color:#ff7733;">&#39;de</span><span>&gt; </span><span style="color:#ff7733;">for </span><span style="color:#59c2ff;">SeqVisitor</span><span>&lt;V&gt; {
+</span><span>    </span><span style="color:#ff7733;">fn </span><span style="color:#ffb454;">visit_seq</span><span>&lt;A&gt;(</span><span style="color:#f29718;">self</span><span>, </span><span style="color:#ff7733;">mut </span><span style="color:#f29718;">seq</span><span style="color:#bfbab0cc;">:</span><span> A) </span><span style="color:#bfbab0cc;">-&gt; </span><span style="font-style:italic;color:#39bae6;">Result</span><span>&lt;</span><span style="color:#ff7733;">Self</span><span style="color:#f29668;">::</span><span>Value, </span><span style="color:#ff7733;">A</span><span style="color:#f29668;">::</span><span>Error&gt;
+</span><span>    </span><span style="color:#ff7733;">where
+</span><span>        A</span><span style="color:#bfbab0cc;">: </span><span>serde</span><span style="color:#f29668;">::</span><span>de</span><span style="color:#f29668;">::</span><span>SeqAccess&lt;</span><span style="color:#ff7733;">&#39;de</span><span>&gt;,
+</span><span>    {
+</span><span>        </span><span style="color:#ff7733;">let </span><span style="color:#f29668;">_ =</span><span> seq</span><span style="color:#f29668;">.</span><span>next_element</span><span style="color:#f29668;">::</span><span>&lt;IgnoredAny&gt;()</span><span style="color:#f29668;">?</span><span style="color:#bfbab0cc;">; </span><span style="font-style:italic;color:#5c6773;">// We ignore the event value
+</span><span>        </span><span style="font-style:italic;color:#5c6773;">/// We defer the rest of the sequence visits to the inner visitor.
+</span><span>        </span><span style="font-style:italic;color:#39bae6;">self</span><span style="color:#f29668;">.</span><span>inner</span><span style="color:#f29668;">.</span><span style="color:#f07178;">visit_seq</span><span>(seq)
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>And we can create our visitor in our deserializer wrapper.</p>
+<pre data-lang="rust" style="background-color:#0f1419;color:#bfbab0;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#ff7733;">struct </span><span style="color:#59c2ff;">Deserializer</span><span>&lt;D&gt; {
+</span><span>    inner</span><span style="color:#bfbab0cc;">:</span><span> D,
+</span><span>}
+</span><span>
+</span><span style="color:#ff7733;">impl</span><span>&lt;</span><span style="color:#ff7733;">&#39;de</span><span>, D</span><span style="color:#bfbab0cc;">: </span><span>de</span><span style="color:#f29668;">::</span><span>Deserializer&lt;</span><span style="color:#ff7733;">&#39;de</span><span>&gt;&gt; de</span><span style="color:#f29668;">::</span><span>Deserializer&lt;</span><span style="color:#ff7733;">&#39;de</span><span>&gt; </span><span style="color:#ff7733;">for </span><span style="color:#59c2ff;">Deserializer</span><span>&lt;D&gt; {
+</span><span>    </span><span style="color:#ff7733;">type </span><span style="color:#59c2ff;">Error </span><span style="color:#f29668;">= </span><span>D</span><span style="color:#f29668;">::</span><span>Error</span><span style="color:#bfbab0cc;">;
+</span><span>
+</span><span>    </span><span style="color:#ff7733;">fn </span><span style="color:#ffb454;">deserialize_seq</span><span>&lt;V</span><span style="color:#bfbab0cc;">: </span><span>Visitor&lt;</span><span style="color:#ff7733;">&#39;de</span><span>&gt;&gt;(</span><span style="color:#f29718;">self</span><span>, </span><span style="color:#f29718;">visitor</span><span style="color:#bfbab0cc;">:</span><span> V) </span><span style="color:#bfbab0cc;">-&gt; </span><span style="font-style:italic;color:#39bae6;">Result</span><span>&lt;</span><span style="color:#ff7733;">V</span><span style="color:#f29668;">::</span><span>Value, </span><span style="color:#ff7733;">Self</span><span style="color:#f29668;">::</span><span>Error&gt; {
+</span><span>        </span><span style="font-style:italic;color:#39bae6;">self</span><span style="color:#f29668;">.</span><span>inner</span><span style="color:#f29668;">.</span><span style="color:#f07178;">deserialize_seq</span><span>(SeqVisitor</span><span style="color:#f29668;">::</span><span>new(visitor)))
+</span><span>    }
+</span><span style="color:#f29668;">...
+</span><span>}
+</span></code></pre>
+<p>With this we don't need to deserialize our data to an intermediate dynamic value, we can immediately find the corresponding event handler and deserialize the raw JSON string to a user provided type and skip the event.</p>
+<h2 id="2-precise-handling-of-tuples-vs-arrays-for-variadic-arguments">     2. Precise handling of tuples vs arrays for variadic arguments</h2>
+<p>In Socket.IO if you send a vec with <code>socket.emit("event", [1, 2, 3, 4])</code>, it will be serialized like this: <code>[event, [1, 2, 3, 4]]</code> but if you send variadics with <code>socket.emit("event", 1, 2, 3, 4)</code>, it will be serialized as: <code>[event, 1, 2, 3, 4]</code>.</p>
+<p>But, how can we do the difference on the Rust-side? So that a multi-argument payload is deserialized to a tuple and a vector of data is deserialized to a vec?</p>
+<p>Well, that's the user responsibility. They will know whether they are expecting a vec or tuple!</p>
+<p>So here is what we could do. First we need to know if the user provided a tuple or something else, prepare yourself—it's kind of hacky.</p>
+<p><code>IsTupleSerde</code> has an implementation for serializer and deserializer that will simply error immediately with a boolean saying
+if the root type appears to be a tuple or not (without visiting anything or any data):</p>
+<pre data-lang="rust" style="background-color:#0f1419;color:#bfbab0;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#ff7733;">impl</span><span>&lt;</span><span style="color:#ff7733;">&#39;de</span><span>&gt; serde</span><span style="color:#f29668;">::</span><span>Deserializer&lt;</span><span style="color:#ff7733;">&#39;de</span><span>&gt; </span><span style="color:#ff7733;">for </span><span style="color:#59c2ff;">IsTupleSerde </span><span>{
+</span><span>    </span><span style="color:#ff7733;">type </span><span style="color:#59c2ff;">Error </span><span style="color:#f29668;">=</span><span> IsTupleSerdeError</span><span style="color:#bfbab0cc;">;
+</span><span>
+</span><span>    </span><span style="font-style:italic;color:#5c6773;">/// All these types are non-tuple
+</span><span>    serde</span><span style="color:#f29668;">::</span><span>forward_to_deserialize_any</span><span style="color:#f29668;">! </span><span>{
+</span><span>        </span><span style="color:#ff7733;">bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str
+</span><span>        string unit unit_struct seq  map
+</span><span>        </span><span style="color:#ff7733;">struct </span><span style="color:#59c2ff;">enum</span><span> identifier ignored_any bytes byte_buf option
+</span><span>    }
+</span><span>    </span><span style="font-style:italic;color:#5c6773;">/// The root type is not a tuple! We stop the deserialization process immediately by returning a stub error.
+</span><span>    fn deserialize_any&lt;V: Visitor&lt;&#39;de&gt;&gt;(self, _visitor: V) </span><span style="color:#bfbab0cc;">-&gt; </span><span style="font-style:italic;color:#39bae6;">Result</span><span>&lt;</span><span style="color:#ff7733;">V</span><span style="color:#f29668;">::</span><span>Value, </span><span style="color:#ff7733;">Self</span><span style="color:#f29668;">::</span><span>Error&gt; {
+</span><span>        </span><span style="font-style:italic;color:#39bae6;">Err</span><span>(IsTupleSerdeError(</span><span style="color:#f29718;">false</span><span>))
+</span><span>    }
+</span><span>    </span><span style="font-style:italic;color:#5c6773;">/// The root type is a tuple! We stop the deserialization process immediately by returning a stub error.
+</span><span>    </span><span style="color:#ff7733;">fn </span><span style="color:#ffb454;">deserialize_tuple</span><span>&lt;V</span><span style="color:#bfbab0cc;">: </span><span>Visitor&lt;</span><span style="color:#ff7733;">&#39;de</span><span>&gt;&gt;(
+</span><span>        </span><span style="color:#f29718;">self</span><span>,
+</span><span>        </span><span style="color:#f29718;">_len</span><span style="color:#bfbab0cc;">: </span><span style="color:#ff7733;">usize</span><span>,
+</span><span>        </span><span style="color:#f29718;">_visitor</span><span style="color:#bfbab0cc;">:</span><span> V,
+</span><span>    ) </span><span style="color:#bfbab0cc;">-&gt; </span><span style="font-style:italic;color:#39bae6;">Result</span><span>&lt;</span><span style="color:#ff7733;">V</span><span style="color:#f29668;">::</span><span>Value, </span><span style="color:#ff7733;">Self</span><span style="color:#f29668;">::</span><span>Error&gt; {
+</span><span>        </span><span style="font-style:italic;color:#39bae6;">Err</span><span>(IsTupleSerdeError(</span><span style="color:#f29718;">true</span><span>))
+</span><span>    }
+</span></code></pre>
+<p>We can then make a little function to check if a type is a tuple or not:</p>
+<pre data-lang="rust" style="background-color:#0f1419;color:#bfbab0;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="font-style:italic;color:#5c6773;">/// Returns true if the type is a tuple-like type according to the serde model.
+</span><span style="color:#ff7733;">pub fn </span><span style="color:#ffb454;">is_de_tuple</span><span>&lt;</span><span style="color:#ff7733;">&#39;de</span><span>, T</span><span style="color:#bfbab0cc;">: </span><span>serde</span><span style="color:#f29668;">::</span><span>Deserialize&lt;</span><span style="color:#ff7733;">&#39;de</span><span>&gt;&gt;() </span><span style="color:#bfbab0cc;">-&gt; </span><span style="color:#ff7733;">bool </span><span>{
+</span><span>    </span><span style="color:#ff7733;">match </span><span>T</span><span style="color:#f29668;">::</span><span>deserialize(IsTupleSerde) {
+</span><span>        </span><span style="font-style:italic;color:#39bae6;">Ok</span><span>(</span><span style="color:#f29668;">_</span><span>) </span><span style="color:#f29668;">=&gt; </span><span style="color:#f07178;">unreachable!</span><span>()</span><span style="color:#bfbab0cc;">,
+</span><span>        </span><span style="font-style:italic;color:#39bae6;">Err</span><span>(IsTupleSerdeError(v)) </span><span style="color:#f29668;">=&gt;</span><span> v</span><span style="color:#bfbab0cc;">,
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>And then use it.</p>
+<pre data-lang="rust" style="background-color:#0f1419;color:#bfbab0;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#ff7733;">pub fn </span><span style="color:#ffb454;">from_value</span><span>&lt;</span><span style="color:#ff7733;">&#39;de</span><span>, T</span><span style="color:#bfbab0cc;">: </span><span>Deserialize&lt;</span><span style="color:#ff7733;">&#39;de</span><span>&gt;&gt;(
+</span><span>    </span><span style="color:#f29718;">data</span><span style="color:#bfbab0cc;">: </span><span style="color:#f29668;">&amp;</span><span style="color:#ff7733;">&#39;de str</span><span>,
+</span><span>) </span><span style="color:#bfbab0cc;">-&gt; </span><span>serde_json</span><span style="color:#f29668;">::</span><span style="font-style:italic;color:#39bae6;">Result</span><span>&lt;T&gt; {
+</span><span>    </span><span style="font-style:italic;color:#5c6773;">/// We create a json deserialize and we wrap it with our own
+</span><span>    </span><span style="font-style:italic;color:#5c6773;">/// to override some behaviors.
+</span><span>    </span><span style="color:#ff7733;">let</span><span> inner </span><span style="color:#f29668;">= &amp;</span><span style="color:#ff7733;">mut </span><span>serde_json</span><span style="color:#f29668;">::</span><span>Deserializer</span><span style="color:#f29668;">::</span><span>from_str(data)</span><span style="color:#bfbab0cc;">;
+</span><span>    </span><span style="color:#ff7733;">let</span><span> de </span><span style="color:#f29668;">=</span><span> Deserializer { inner }</span><span style="color:#bfbab0cc;">;
+</span><span>
+</span><span>    </span><span style="color:#ff7733;">if </span><span>is_de_tuple</span><span style="color:#f29668;">::</span><span>&lt;T&gt;() {
+</span><span>        </span><span style="font-style:italic;color:#5c6773;">/// Our type T is a tuple we deserialize everything incoming except the first element as it is the event.
+</span><span>        T</span><span style="color:#f29668;">::</span><span>deserialize(de)
+</span><span>    } </span><span style="color:#ff7733;">else </span><span>{
+</span><span>        </span><span style="font-style:italic;color:#5c6773;">/// Our type T is not a tuple we deserialize only the first element
+</span><span>        </span><span style="font-style:italic;color:#5c6773;">/// (it should be the second but the deserializer first skip the event).
+</span><span>        FirstElement</span><span style="color:#f29668;">::</span><span>&lt;T&gt;</span><span style="color:#f29668;">::</span><span>default()</span><span style="color:#f29668;">.</span><span style="color:#f07178;">deserialize</span><span>(de)
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<h2 id="3-binary-buffer-reinjection">     3. Binary buffer reinjection</h2>
+<p>As you saw before, with the visitor pattern we can completely separate the incoming data side with the mapped user types.
+This is what we are going to do! We are going to map serde maps (the binary placeholders) to user binary types.</p>
+<p>We can make a custom <code>BinaryVisitor</code> wrapper that will be instantiated for any user provided bytes types.
+But with a twist! When <code>serde_json</code> will ask our binary visitor to visit a map, rather than bailing out, it will happily accept it and:</p>
+<ul>
+<li>check that it is a placeholder, e.g.: <code>{ "_placeholder": true, "num": 1 }</code>.</li>
+<li>take the corresponding binary from the queue and return it.</li>
+</ul>
+<pre data-lang="rust" style="background-color:#0f1419;color:#bfbab0;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#ff7733;">struct </span><span style="color:#59c2ff;">BinaryVisitor</span><span>&lt;</span><span style="color:#ff7733;">&#39;a</span><span>, V&gt; {
+</span><span>    binary_payloads</span><span style="color:#bfbab0cc;">: </span><span style="color:#f29668;">&amp;</span><span style="color:#ff7733;">&#39;a mut </span><span>VecDeque&lt;Bytes&gt;,
+</span><span>    inner</span><span style="color:#bfbab0cc;">:</span><span> V,
+</span><span>}
+</span><span>
+</span><span style="color:#ff7733;">impl</span><span>&lt;</span><span style="color:#ff7733;">&#39;de</span><span>, V</span><span style="color:#bfbab0cc;">: </span><span>de</span><span style="color:#f29668;">::</span><span>Visitor&lt;</span><span style="color:#ff7733;">&#39;de</span><span>&gt;&gt; Visitor&lt;</span><span style="color:#ff7733;">&#39;de</span><span>&gt; </span><span style="color:#ff7733;">for </span><span style="color:#59c2ff;">BinaryVisitor</span><span>&lt;&#39;</span><span style="color:#f29668;">_</span><span>, V&gt; {
+</span><span>    </span><span style="color:#ff7733;">fn </span><span style="color:#ffb454;">visit_map</span><span>&lt;A</span><span style="color:#bfbab0cc;">: </span><span>serde</span><span style="color:#f29668;">::</span><span>de</span><span style="color:#f29668;">::</span><span>MapAccess&lt;</span><span style="color:#ff7733;">&#39;de</span><span>&gt;&gt;(</span><span style="color:#f29718;">self</span><span>, </span><span style="color:#ff7733;">mut </span><span style="color:#f29718;">map</span><span style="color:#bfbab0cc;">:</span><span> A) </span><span style="color:#bfbab0cc;">-&gt; </span><span style="font-style:italic;color:#39bae6;">Result</span><span>&lt;</span><span style="color:#ff7733;">Self</span><span style="color:#f29668;">::</span><span>Value, </span><span style="color:#ff7733;">A</span><span style="color:#f29668;">::</span><span>Error&gt; {
+</span><span>        </span><span style="color:#bfbab0cc;">#</span><span>[</span><span style="color:#ffb454;">derive</span><span>(serde::Deserialize)]
+</span><span>        </span><span style="color:#ff7733;">enum </span><span style="color:#59c2ff;">Val </span><span>{
+</span><span>            Placeholder(</span><span style="color:#ff7733;">bool</span><span>)</span><span style="color:#bfbab0cc;">,
+</span><span>            Num(</span><span style="color:#ff7733;">usize</span><span>)</span><span style="color:#bfbab0cc;">,
+</span><span>        }
+</span><span>
+</span><span>        </span><span style="color:#ff7733;">let </span><span>(key</span><span style="color:#bfbab0cc;">,</span><span> val) </span><span style="color:#f29668;">=</span><span> map
+</span><span>            </span><span style="color:#f29668;">.</span><span>next_entry</span><span style="color:#f29668;">::</span><span>&lt;</span><span style="color:#f29668;">&amp;</span><span style="color:#ff7733;">str</span><span>, Val&gt;()</span><span style="color:#f29668;">?
+</span><span>            </span><span style="color:#f29668;">.</span><span style="color:#f07178;">ok_or</span><span>(A</span><span style="color:#f29668;">::</span><span>Error</span><span style="color:#f29668;">::</span><span>custom(</span><span style="color:#c2d94c;">&quot;expected a binary placeholder&quot;</span><span>))</span><span style="color:#f29668;">?</span><span style="color:#bfbab0cc;">;
+</span><span>        </span><span style="color:#ff7733;">let </span><span>(key1</span><span style="color:#bfbab0cc;">,</span><span> val1) </span><span style="color:#f29668;">=</span><span> map
+</span><span>            </span><span style="color:#f29668;">.</span><span>next_entry</span><span style="color:#f29668;">::</span><span>&lt;</span><span style="color:#f29668;">&amp;</span><span style="color:#ff7733;">str</span><span>, Val&gt;()</span><span style="color:#f29668;">?
+</span><span>            </span><span style="color:#f29668;">.</span><span style="color:#f07178;">ok_or</span><span>(A</span><span style="color:#f29668;">::</span><span>Error</span><span style="color:#f29668;">::</span><span>custom(</span><span style="color:#c2d94c;">&quot;expected a binary placeholder&quot;</span><span>))</span><span style="color:#f29668;">?</span><span style="color:#bfbab0cc;">;
+</span><span>
+</span><span>        </span><span style="color:#ff7733;">match </span><span>(key</span><span style="color:#bfbab0cc;">,</span><span> val</span><span style="color:#bfbab0cc;">,</span><span> key1</span><span style="color:#bfbab0cc;">,</span><span> val1) {
+</span><span>            (</span><span style="color:#c2d94c;">&quot;_placeholder&quot;</span><span style="color:#bfbab0cc;">, </span><span>Val</span><span style="color:#f29668;">::</span><span>Placeholder(</span><span style="color:#f29718;">true</span><span>)</span><span style="color:#bfbab0cc;">, </span><span style="color:#c2d94c;">&quot;num&quot;</span><span style="color:#bfbab0cc;">, </span><span>Val</span><span style="color:#f29668;">::</span><span>Num(idx))
+</span><span>            </span><span style="color:#f29668;">| </span><span>(</span><span style="color:#c2d94c;">&quot;num&quot;</span><span style="color:#bfbab0cc;">, </span><span>Val</span><span style="color:#f29668;">::</span><span>Num(idx)</span><span style="color:#bfbab0cc;">, </span><span style="color:#c2d94c;">&quot;_placeholder&quot;</span><span style="color:#bfbab0cc;">, </span><span>Val</span><span style="color:#f29668;">::</span><span>Placeholder(</span><span style="color:#f29718;">true</span><span>)) </span><span style="color:#f29668;">=&gt; </span><span>{
+</span><span>                </span><span style="color:#ff7733;">let</span><span> payload </span><span style="color:#f29668;">= </span><span style="font-style:italic;color:#39bae6;">self
+</span><span>                    </span><span style="color:#f29668;">.</span><span>binary_payloads
+</span><span>                    </span><span style="color:#f29668;">.</span><span style="color:#f07178;">pop_front</span><span>()
+</span><span>                    </span><span style="color:#f29668;">.</span><span style="color:#f07178;">ok_or_else</span><span>(|| A</span><span style="color:#f29668;">::</span><span>Error</span><span style="color:#f29668;">::</span><span>custom(</span><span style="color:#f07178;">format!</span><span>(</span><span style="color:#c2d94c;">&quot;binary payload </span><span style="color:#f29718;">{}</span><span style="color:#c2d94c;"> not found&quot;</span><span style="color:#bfbab0cc;">,</span><span> idx)))</span><span style="color:#f29668;">?</span><span style="color:#bfbab0cc;">;
+</span><span>                </span><span style="font-style:italic;color:#39bae6;">self</span><span style="color:#f29668;">.</span><span>inner</span><span style="color:#f29668;">.</span><span style="color:#f07178;">visit_byte_buf</span><span>(</span><span style="font-style:italic;color:#39bae6;">Vec</span><span style="color:#f29668;">::</span><span>from(payload))
+</span><span>            }
+</span><span>            </span><span style="color:#f29668;">_ =&gt; </span><span style="font-style:italic;color:#39bae6;">Err</span><span>(A</span><span style="color:#f29668;">::</span><span>Error</span><span style="color:#f29668;">::</span><span>custom(</span><span style="color:#c2d94c;">&quot;expected a binary placeholder&quot;</span><span>))</span><span style="color:#bfbab0cc;">,
+</span><span>        }
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="color:#ff7733;">fn </span><span style="color:#ffb454;">visit_borrowed_bytes</span><span>&lt;E</span><span style="color:#bfbab0cc;">: </span><span>serde</span><span style="color:#f29668;">::</span><span>de</span><span style="color:#f29668;">::</span><span>Error&gt;(</span><span style="color:#f29718;">self</span><span>, </span><span style="color:#f29718;">v</span><span style="color:#bfbab0cc;">: </span><span style="color:#f29668;">&amp;</span><span style="color:#ff7733;">&#39;de</span><span> [</span><span style="color:#ff7733;">u8</span><span>]) </span><span style="color:#bfbab0cc;">-&gt; </span><span style="font-style:italic;color:#39bae6;">Result</span><span>&lt;</span><span style="color:#ff7733;">Self</span><span style="color:#f29668;">::</span><span>Value, E&gt; {
+</span><span>        </span><span style="font-style:italic;color:#39bae6;">self</span><span style="color:#f29668;">.</span><span>inner</span><span style="color:#f29668;">.</span><span style="color:#f07178;">visit_borrowed_bytes</span><span>(v)
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="color:#ff7733;">fn </span><span style="color:#ffb454;">visit_byte_buf</span><span>&lt;E</span><span style="color:#bfbab0cc;">: </span><span>serde</span><span style="color:#f29668;">::</span><span>de</span><span style="color:#f29668;">::</span><span>Error&gt;(</span><span style="color:#f29718;">self</span><span>, </span><span style="color:#f29718;">v</span><span style="color:#bfbab0cc;">: </span><span style="font-style:italic;color:#39bae6;">Vec</span><span>&lt;</span><span style="color:#ff7733;">u8</span><span>&gt;) </span><span style="color:#bfbab0cc;">-&gt; </span><span style="font-style:italic;color:#39bae6;">Result</span><span>&lt;</span><span style="color:#ff7733;">Self</span><span style="color:#f29668;">::</span><span>Value, E&gt; {
+</span><span>        </span><span style="font-style:italic;color:#39bae6;">self</span><span style="color:#f29668;">.</span><span>inner</span><span style="color:#f29668;">.</span><span style="color:#f07178;">visit_byte_buf</span><span>(v)
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="color:#ff7733;">fn </span><span style="color:#ffb454;">visit_bytes</span><span>&lt;E</span><span style="color:#bfbab0cc;">: </span><span>serde</span><span style="color:#f29668;">::</span><span>de</span><span style="color:#f29668;">::</span><span>Error&gt;(</span><span style="color:#f29718;">self</span><span>, </span><span style="color:#f29718;">v</span><span style="color:#bfbab0cc;">: </span><span style="color:#f29668;">&amp;</span><span>[</span><span style="color:#ff7733;">u8</span><span>]) </span><span style="color:#bfbab0cc;">-&gt; </span><span style="font-style:italic;color:#39bae6;">Result</span><span>&lt;</span><span style="color:#ff7733;">Self</span><span style="color:#f29668;">::</span><span>Value, E&gt; {
+</span><span>        </span><span style="font-style:italic;color:#39bae6;">self</span><span style="color:#f29668;">.</span><span>inner</span><span style="color:#f29668;">.</span><span style="color:#f07178;">visit_bytes</span><span>(v)
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>Then we can use our <code>BinaryVisitor</code> wrapper for any call to <code>deserialize_bytes</code> or <code>deserialize_byte_buf</code>:</p>
+<pre data-lang="rust" style="background-color:#0f1419;color:#bfbab0;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#ff7733;">struct </span><span style="color:#59c2ff;">Deserializer</span><span>&lt;</span><span style="color:#ff7733;">&#39;a</span><span>, D&gt; {
+</span><span>    inner</span><span style="color:#bfbab0cc;">:</span><span> D,
+</span><span>    binary_payloads</span><span style="color:#bfbab0cc;">: </span><span style="color:#f29668;">&amp;</span><span style="color:#ff7733;">&#39;a mut </span><span>VecDeque&lt;Bytes&gt;,
+</span><span>}
+</span><span>
+</span><span style="color:#ff7733;">impl</span><span>&lt;</span><span style="color:#ff7733;">&#39;de</span><span>, D</span><span style="color:#bfbab0cc;">: </span><span>de</span><span style="color:#f29668;">::</span><span>Deserializer&lt;</span><span style="color:#ff7733;">&#39;de</span><span>&gt;&gt; de</span><span style="color:#f29668;">::</span><span>Deserializer&lt;</span><span style="color:#ff7733;">&#39;de</span><span>&gt; </span><span style="color:#ff7733;">for </span><span style="color:#59c2ff;">Deserializer</span><span>&lt;&#39;</span><span style="color:#f29668;">_</span><span>, D&gt; {
+</span><span>    </span><span style="color:#ff7733;">type </span><span style="color:#59c2ff;">Error </span><span style="color:#f29668;">= </span><span>D</span><span style="color:#f29668;">::</span><span>Error</span><span style="color:#bfbab0cc;">;
+</span><span>
+</span><span>    </span><span style="color:#bfbab0cc;">#</span><span>[</span><span style="color:#ffb454;">inline</span><span>]
+</span><span>    </span><span style="color:#ff7733;">fn </span><span style="color:#ffb454;">deserialize_bytes</span><span>&lt;V</span><span style="color:#bfbab0cc;">: </span><span>Visitor&lt;</span><span style="color:#ff7733;">&#39;de</span><span>&gt;&gt;(</span><span style="color:#f29718;">self</span><span>, </span><span style="color:#f29718;">visitor</span><span style="color:#bfbab0cc;">:</span><span> V) </span><span style="color:#bfbab0cc;">-&gt; </span><span style="font-style:italic;color:#39bae6;">Result</span><span>&lt;</span><span style="color:#ff7733;">V</span><span style="color:#f29668;">::</span><span>Value, </span><span style="color:#ff7733;">Self</span><span style="color:#f29668;">::</span><span>Error&gt; {
+</span><span>        </span><span style="font-style:italic;color:#39bae6;">self</span><span style="color:#f29668;">.</span><span>inner</span><span style="color:#f29668;">.</span><span style="color:#f07178;">deserialize_map</span><span>(BinaryVisitor {
+</span><span>            inner</span><span style="color:#bfbab0cc;">:</span><span> visitor</span><span style="color:#bfbab0cc;">,
+</span><span>            binary_payloads</span><span style="color:#bfbab0cc;">: </span><span style="font-style:italic;color:#39bae6;">self</span><span style="color:#f29668;">.</span><span>binary_payloads</span><span style="color:#bfbab0cc;">,
+</span><span>        })
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="color:#bfbab0cc;">#</span><span>[</span><span style="color:#ffb454;">inline</span><span>]
+</span><span>    </span><span style="color:#ff7733;">fn </span><span style="color:#ffb454;">deserialize_byte_buf</span><span>&lt;V</span><span style="color:#bfbab0cc;">: </span><span>Visitor&lt;</span><span style="color:#ff7733;">&#39;de</span><span>&gt;&gt;(</span><span style="color:#f29718;">self</span><span>, </span><span style="color:#f29718;">visitor</span><span style="color:#bfbab0cc;">:</span><span> V) </span><span style="color:#bfbab0cc;">-&gt; </span><span style="font-style:italic;color:#39bae6;">Result</span><span>&lt;</span><span style="color:#ff7733;">V</span><span style="color:#f29668;">::</span><span>Value, </span><span style="color:#ff7733;">Self</span><span style="color:#f29668;">::</span><span>Error&gt; {
+</span><span>        </span><span style="font-style:italic;color:#39bae6;">self</span><span style="color:#f29668;">.</span><span>inner</span><span style="color:#f29668;">.</span><span style="color:#f07178;">deserialize_map</span><span>(BinaryVisitor {
+</span><span>            inner</span><span style="color:#bfbab0cc;">:</span><span> visitor</span><span style="color:#bfbab0cc;">,
+</span><span>            binary_payloads</span><span style="color:#bfbab0cc;">: </span><span style="font-style:italic;color:#39bae6;">self</span><span style="color:#f29668;">.</span><span>binary_payloads</span><span style="color:#bfbab0cc;">,
+</span><span>        })
+</span><span>    }
+</span><span style="color:#f29668;">...
+</span></code></pre>
+<h1 id="conclusion">Conclusion</h1>
+<p>Et voilà! We have extended/twisted serde to do custom deserialization without writing any parsing code (I will happily let that for serde_json)!</p>
+<p>We went from a two-phase dynamic system to a single-phase, type-safe, performant deserialization pipeline to a one-phase deserialization process that handles:</p>
+<ul>
+<li>External binary data re-injection.</li>
+<li>First element (the event name) extracted for routing and skipped for user deserialization.</li>
+<li>Differentiation between tuples and vecs to support deserializing from JS sent variadics.</li>
+<li>Zero-copy deserialization! Don’t get me wrong—it’s still 'partial' zero-copy, since we're using JSON. But for basic strings at least.</li>
+<li>Performance (because we all like the little thrill of perf improvements):
+We reduced processing time for a basic packet from 600ns to just 60ns. Memory usage is also significantly more efficient, as no unnecessary allocations are made. Additionally, if the user chooses not to deserialize the incoming data—or if it doesn't match the expected user types—it simply isn't deserialized.</li>
+</ul>
+
+			
+
+
+		</article>
+	</section>
+	
+	<div id="cusdis">
+		
+				<div id="cusdis_thread"
+				style="background: none !important;"
+				data-host="https://cusdis.com"
+				data-app-id="fca7dcf2-c2fc-46fe-adfe-df1f1a7e5cc2"
+				data-page-id="https:&#x2F;&#x2F;totodore.github.io&#x2F;serde-wrapper&#x2F;"
+				data-page-url="serde-wrapper"
+				data-page-title="Inside Serde: Building a Custom JSON Deserializer with binary support and more"
+				data-theme="auto"
+				></div>
+				<script async defer src="/js/cusdis.es.js"></script>
+		
+	</div>
+</div>
+
+
+        <footer>
+            
+            <p>
+                Feather theme by <a href="https://doomy.org">doomy</a>&nbsp;&nbsp;-&nbsp;&nbsp; Built with <a
+                    href="https://getzola.org">Zola</a>
+            </p>
+            
+        </footer>
+    </div>
+    
+    <script>
+        function change_theme(theme) {
+            if (theme == "light") {
+                document.body.classList.remove("dark");
+                document.body.classList.add("light");
+                document.querySelector('#syntax').href = '/syntax-theme-light.css';
+            } else if (theme == "dark") {
+                document.body.classList.add("dark");
+                document.body.classList.remove("light");
+                document.querySelector('#syntax').href = '/syntax-theme-dark.css';
+            }
+            localStorage.setItem("theme", theme);
+        }
+
+        window.addEventListener('load', () => {
+            // Select the button
+            const theme = (function () {
+                const stored = localStorage.getItem("theme");
+                if (stored == "null") {
+                    if (window.matchMedia("(prefers-color-scheme: dark)").matches) {
+                        return "dark";
+                    } else {
+                        return "light";
+                    }
+                } else {
+                    return stored;
+                }
+            })();
+
+            change_theme(theme);
+
+            // Listen for a click on the button
+            document.querySelector(".theme-switcher").addEventListener("click", function () {
+                if (!document.body.classList.contains("dark")) {
+                    change_theme("dark");
+                } else {
+                    change_theme("light");
+                }
+            });
+
+        });
+    </script>
+    
+    <script src="/js/footnote.js"></script>
+</body>
+
+</html>
