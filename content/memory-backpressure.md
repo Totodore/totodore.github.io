@@ -1,7 +1,7 @@
 +++
 title = "Memory bounded systems and backpressure in rust"
 date = 2026-11-07
-description = ""
+description = "Trest"
 [taxonomies]
 tags = ["memory", "rust"]
 +++
@@ -33,7 +33,7 @@ The easiest way to bind your system memory is to limit two things:
 * The maximum number of requests it can process in parallel with a semaphore.
 
 ### An example with tower services
-If your system implement the [tower `Service` trait]() (which I highly recommend you to do for ecosystem integration purpose), you can leverage the [concurrency limit layer](https://docs.rs/tower/latest/tower/limit/concurrency/) for this. And expose the concurrency limit as a configuration knob. If your memory allocation is tied to requests handling this might be one of the easiest solutions.
+If your system implement the [tower `Service` trait](https://docs.rs/tower/latest/tower/trait.Service.html) (which I highly recommend you to do for ecosystem integration purpose), you can leverage the [concurrency limit layer](https://docs.rs/tower/latest/tower/limit/concurrency/) for this. And expose the concurrency limit as a configuration knob. If your memory allocation is tied to requests handling this might be one of the easiest solutions.
 
 ### An example with poll based consumers
 
@@ -50,14 +50,14 @@ There are multiple caveats with this solution that will appear in this process:
 
 # Byte-budget bounding
 In fact, the capacity planning complexity comes from the load per request, the maximum number of parallel request is straightforward to plan.
-So byte budget is another solution is to bind the possible allocation for a given work task, through either a dedicated allocator or bounded arena. The idea is to limit the maximum allocated memory for the processing task either with a memory arena or a custom allocator.
+So byte budget is another solution to bind the possible allocation for a given work task, through either a dedicated allocator or bounded arena. The idea is to limit the maximum allocated memory for the processing task either with a memory arena or a custom allocator.
 One of its biggest advantage is a that it allows for a finer customization of the system behavior while having a more precise idea of what we are limiting. And you can implement different behavior if your memory bound is reach, for example you can flush processed data eagerly if it is scratch data or you can refuse any incoming data.
 
-However, it might cost you more configurations burden, the operator need to tweak multiple limits and understand how they interact each others. Also it might not be applicable for every systems.
-Indeed, using such solution might no be an option, especially if most of the allocations made by your service are coming from external libs. Today, it is extremely rare to find libs that support custom allocators or that are only arena based. Some workload can not fit the bounded arena model and the allocator trait is just being stabilized (coming with rust 1.100).
+However, it might cost you more configurations burden, the operator needs to tweak multiple limits and understand how they interact each others. Also it might not be applicable for every systems.
+Indeed, using such solution might no be an option, especially if most of the allocations issued by your service are coming from external libs. Today, it is extremely rare to find crates that support custom allocators or that are only arena based. Some workload can not fit the bounded arena model and the allocator trait is just being stabilized (coming with rust 1.100).
 
 # Global memory bounding
-A lot of memory managed langages have ways of bounding memory through Garbage Collection.
+A lot of memory managed langages have ways of bounding memory globally through Garbage Collection.
 Go has `GOMEMLIMIT`, Java has `MaxRAMPercentage` and `MaxHeapSize`, ... However there is no standard mechanism available for this in Rust (or any language that is not memory managed).
 
 However, you can use a custom allocator that will give you stats of your heap usage. These allocators are usually declared globally (though the `Allocator` trait has recently been stabilized).
@@ -65,8 +65,6 @@ __examples__
 
 ### Jemallocator
 So I decided to use jemalloc for my use case: an HTTP server, at the beggining of a data processing pipeline that was ingesting and validating high volume of data to be processed downstream.
-This HTTP server is build statically with musl. It must be able to refuse new requests with a 503 status code and a `Retry-After` header if its memory limit is threspassed. So we need to know, in realtime the current memory usage with a minimal performance impact.
-
 I opted for Jemalloc since it is one of the most complete allocators and provide a lot of features. Moreover the the rust integration is really nice with the `_jemallocator_` and `jemallocator_ctl` crates.
 
 ## Example
@@ -79,6 +77,7 @@ I opted for Jemalloc since it is one of the most complete allocators and provide
 Jemalloc provides a lot of metrics for your: allocated, resident, residual, retained, ... The question is not about whats the one that will match with my RSS/memory working set measured by the OS: non will. The best that we can do is to measure the evolution of each metric against the RSS and determine a formula. Which will most likely be linear: C + alpha * M = RSS.
 With this we can account for the thread stacks, the binary program binary and static sections as well as a pre-defined overhead (lets say 75%).
 
+# Conclusion
 
  I personnally tend towards using the global allocator solution and fallback for the third if
  it is required.
