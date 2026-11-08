@@ -1,0 +1,28 @@
+{% extends "_base.html" %}
+
+{% block feeds %}
+{% if config.generate_feeds %}
+<link rel="alternate" type="application/atom+xml" href="{{ term.permalink ~ "atom.xml" }}">
+{% endif %}
+{% endblock feeds %}
+
+{% block content %}
+
+<div class="container">
+  <section>
+    <h2>#{{ term.name }}</h2>
+  </section>
+  <div class="posts">
+    {% for page in term.pages %}
+    <a class='header-link' href="{{ page.path }}">
+      <h4 class="title"> {{ page.title }} </h4>
+    </a>
+    <p>
+      {{ page.content | safe | striptags | truncate(length=255) }}
+    </p>
+    {{<tags taxonomy={page.taxonomies.tags or []} />}}
+    <hr />
+    {% endfor %}
+  </div>
+</div>
+{% endblock content %}
