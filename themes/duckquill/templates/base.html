@@ -1,0 +1,48 @@
+{%- set language_strings = load_data(path="i18n/" ~ lang ~ '.toml', required=false) -%}
+{%- if not language_strings -%}
+    {%- set language_strings = load_data(path="themes/duckquill/i18n/" ~ lang ~ ".toml", required=false) -%}
+{%- endif -%}
+
+{#- Taken from https://github.com/welpo/tabi/blob/7b00ed1d9dca5c529d2816c5b6679bfe600d63fc/templates/macros/rel_attributes.html -#}
+{%- set rel_attributes = [] -%}
+{%- if target_blank -%}
+	{%- set rel_attributes = [...rel_attributes, "noopener"] -%}
+{%- endif -%}
+{%- if no_follow -%}
+	{%- set rel_attributes = [...rel_attributes, "nofollow"] -%}
+{%- endif -%}
+{%- if no_referrer -%}
+	{%- set rel_attributes = [...rel_attributes, "noreferrer"] -%}
+{%- endif -%}
+{%- set rel_attributes = rel_attributes | join(sep=" ") -%}
+
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" dir="{{ text_direction(lang=lang) }}" lang="{{ lang }}" {% include "partials/default_theme.html" %}>
+{% include "partials/head.html" %}
+<body>
+{% block body %}
+	{%- if config.extra.nav?.links %}
+		{% include "partials/nav.html" %}
+	{%- endif %}
+	{%- if page?.extra?.toc_sidebar or section?.extra?.toc_sidebar -%}
+		<div id="sidebar">
+			<div>
+				{%- include "partials/toc.html" -%}
+			</div>
+		</div>
+	{%- endif -%}
+	<main id="main-content">
+		{% block custom %}{% endblock custom %}
+		{%- if page?.extra?.go_to_top or section?.extra?.go_to_top -%}
+			<div id="buttons-container">
+				<a id="go-to-top" href="#top" title="{{ <translate key='go_to_top' default='Go to Top' language_strings lang /> }}"><i class="icon"></i></a>
+			</div>
+		{%- endif -%}
+		{% block content %}{% endblock content %}
+	</main>
+	{% include "partials/footer.html" %}
+	{% include "partials/extra_features.html" %}
+	{% include "partials/strings.html" %}
+{% endblock body %}
+</body>
+</html>

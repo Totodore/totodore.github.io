@@ -1,0 +1,52 @@
+{% component video(url, alt="", full=false, full_bleed=false, start=false, end=false, pixels=false, transparent=false, spoiler=false, solid=false, autoplay=false, controls=false, loop=false, muted=false, playsinline=false) %}
+{# Video classes #}
+{%- set video_classes = [] -%}
+{%- if full -%}
+	{%- set video_classes = [...video_classes, "full"] -%}
+{%- endif -%}
+{%- if full_bleed -%}
+	{%- set video_classes = [...video_classes, "full-bleed"] -%}
+{%- endif -%}
+{%- if start -%}
+	{%- set video_classes = [...video_classes, "start"] -%}
+{%- endif -%}
+{%- if end -%}
+	{%- set video_classes = [...video_classes, "end"] -%}
+{%- endif -%}
+{%- if pixels -%}
+	{%- set video_classes = [...video_classes, "pixels"] -%}
+{%- endif -%}
+{%- if transparent -%}
+	{%- set video_classes = [...video_classes, "transparent"] -%}
+{%- endif -%}
+{%- if spoiler -%}
+	{%- set video_classes = [...video_classes, "spoiler"] -%}
+{%- endif -%}
+{%- if spoiler and solid -%}
+	{%- set video_classes = [...video_classes, "solid"] -%}
+{%- endif -%}
+
+{%- set video_classes = video_classes | join(sep=" ") -%}
+
+{# Video attributes #}
+{%- set video_attributes = [] -%}
+{%- if autoplay -%}
+	{%- set video_attributes = [...video_attributes, "autoplay"] -%}
+{%- endif -%}
+{%- if controls -%}
+	{%- set video_attributes = [...video_attributes, "controls"] -%}
+{%- endif -%}
+{%- if loop -%}
+	{%- set video_attributes = [...video_attributes, "loop"] -%}
+{%- endif -%}
+{%- if muted -%}
+	{%- set video_attributes = [...video_attributes, "muted"] -%}
+{%- endif -%}
+{%- if playsinline -%}
+	{%- set video_attributes = [...video_attributes, "playsinline"] -%}
+{%- endif -%}
+
+{%- set video_attributes = video_attributes | join(sep=" ") -%}
+
+<video class="{{ video_classes }}" src="{{ url }}"{% if alt %} aria-title="{{ alt }}"{% endif %}{% if video_attributes %} {{ video_attributes }}{% endif %}></video>
+{%- endcomponent video -%}

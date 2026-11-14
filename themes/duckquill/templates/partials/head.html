@@ -1,0 +1,124 @@
+<head>
+	<!-- {{ now() | date(format='%F %a %R') }} -->
+	<meta charset="UTF-8" />
+	<meta name="description" content="{{ config.description }}" />
+	<meta name="viewport" content="width=device-width, initial-scale=1" />
+	<meta name="theme-color" content="{{ config.extra?.accent_color | default(value='#9a9996') | safe }}" />
+	{%- if config.extra?.accent_color_dark %}
+		<meta name="theme-color" content="{{ config.extra.accent_color_dark | safe }}" media="(prefers-color-scheme:dark)" />
+	{%- endif %}
+	{%- if config.extra?.csp %}
+		{%- include "partials/csp.html" %}
+	{%- endif %}
+	<title>{% include "partials/title.html" %}</title>
+	<link rel="canonical" href="{{ current_url | default(value='/') | safe }}" />
+
+	{%- if config.extra?.comments %}
+		<link rel="me" href="https://{{ config.extra.comments.host }}/@{{ config.extra.comments.user }}" />
+        <meta name="fediverse:creator" content="@{{ config.extra.comments.user }}@{{ config.extra.comments.host }}" />
+	{%- endif %}
+
+	{%- include "partials/favicon.html" %}
+
+	{%- if config.generate_feeds and config.feed_filenames %}
+		{% for feed in config.feed_filenames %}
+			{% if feed == "atom.xml" %}
+				<link rel="alternate" type="application/atom+xml" title="{{ config.title }} - Atom Feed" href="{{ get_url(path=feed) | safe }}">
+			{% elif feed == "rss.xml" %}
+				<link rel="alternate" type="application/rss+xml" title="{{ config.title }} - RSS Feed" href="{{ get_url(path=feed) | safe }}">
+			{% else %}
+				<link rel="alternate" href="{{ get_url(path=feed) | safe }}">
+			{% endif %}
+		{% endfor %}
+    {% endif %}
+
+	{%- include "partials/variables.html" %}
+
+	{%- set styles = [ "style.css", "icons.css" ] %}
+
+	{%- if config.extra?.bundled_fonts %}
+		{%- set styles = [...styles, "fonts.css"] %}
+	{%- endif %}
+
+	{%- if page?.extra?.katex or section?.extra?.katex or config.extra?.katex %}
+		{%- set styles = [...styles, "katex.css"] %}
+	{%- endif %}
+
+	{%- if config.extra?.styles %}
+		{%- set styles = [...styles, ...config.extra.styles] %}
+	{%- endif %}
+
+	{%- if page?.extra?.styles %}
+		{%- set styles = [...styles, ...page.extra.styles] %}
+	{%- elif section?.extra?.styles %}
+		{%- set styles = [...styles, ...section.extra.styles] %}
+	{%- endif %}
+
+	{%- if not config.extra?.debug?.no_styles %}
+		{%- for style in styles %}
+			<link type="text/css" rel="stylesheet" href="{{ get_url(path=style) | safe }}" />
+		{%- endfor %}
+
+		{%- if config.markdown?.highlighting and config.markdown.highlighting.light_theme and config.markdown.highlighting.dark_theme %}
+			<link type="text/css" rel="stylesheet" href="{{ get_url(path='giallo-light.css') }}" media="(prefers-color-scheme: light)" />
+			<link type="text/css" rel="stylesheet" href="{{ get_url(path='giallo-dark.css') }}" media="(prefers-color-scheme: dark)" />
+		{%- elif config.markdown?.highlighting and config.markdown.highlighting.theme %}
+			<link type="text/css" rel="stylesheet" href="{{ get_url(path='giallo.css') }}" />
+		{%- endif %}
+	{%- endif %}
+
+	{%- set scripts = ["closable.js"] %}
+
+	{%- if config.extra?.show_copy_button %}
+		{%- set scripts = [...scripts, "copy-button.js"] %}
+	{%- endif %}
+
+	{%- if config.extra?.goatcounter %}
+		{%- set scripts = [...scripts, "count.js"] %}
+	{%- endif %}
+
+	{%- if page?.extra?.katex or section?.extra?.katex or config.extra?.katex %}
+		{%- set scripts = [...scripts, "katex.min.js", "auto-render.min.js", "katex-init.js"] %}
+	{%- endif %}
+
+	{%- if config.build_search_index %}
+		{%- if config.search.index_format == "elasticlunr_json" -%}
+			{%- set scripts = [...scripts, "elasticlunr.min.js", "search-elasticlunr.js"] %}
+		{%- elif config.search.index_format == "fuse_json" -%}
+			{%- set scripts = [...scripts, "fuse.js", "search-fuse.js"] %}
+		{%- endif -%}
+	{%- endif %}
+
+	{%- if config.extra.nav?.show_theme_switcher %}
+		{%- set scripts = [...scripts, "theme-switcher.js"] %}
+	{%- endif %}
+
+	{%- if page?.extra?.comments?.id %}
+		{%- set scripts = [...scripts, "comments.js"] %}
+	{%- endif %}
+
+	{%- if config.extra?.scripts %}
+		{%- set scripts = [...scripts, ...config.extra.scripts] %}
+	{%- endif %}
+
+	{%- if page?.extra?.scripts %}
+		{%- set scripts = [...scripts, ...page.extra.scripts] %}
+	{%- elif section?.extra?.scripts %}
+		{%- set scripts = [...scripts, ...section.extra.scripts] %}
+	{%- endif %}
+
+	{%- if scripts | length > 0 %}
+		{%- for script in scripts %}
+			<script type="text/javascript" defer {% if script == "count.js" %}data-goatcounter="https://{{ config.extra.goatcounter.user }}.{{ config.extra.goatcounter?.host | default(value='goatcounter.com') }}/count"{% endif %} src="{{ get_url(path=script) | safe }}"></script>
+		{%- endfor %}
+	{%- endif %}
+
+	<meta property="og:site_name" content="{{ config.title }}" />
+	<meta property="og:title" content="{% include 'partials/title.html' %}" />
+	<meta property="og:url" content="{{ current_url | default(value='/') | safe }}" />
+	<meta property="og:description" content="{% include 'partials/description.html' %}" />
+	{%- if config.extra?.card is not defined or config.extra?.card != false -%}
+		<meta property="og:image" content="{% include 'partials/card.html' %}" />
+	{%- endif -%}
+	<meta property="og:locale" content="{{ <translate key="date_locale" default="en_US" language_strings /> }}" />
+</head>
