@@ -64,7 +64,7 @@ However, you can use a custom allocator that will give you stats of your heap us
 __examples__
 
 ### Jemallocator
-So I decided to use jemalloc for my use case: an HTTP server, at the beggining of a data processing pipeline that was ingesting and validating high volume of data to be processed downstream.
+So I decided to use jemalloc for the HTTP server use case, at the beggining of a data processing pipeline that was ingesting and validating high volume of data to be processed downstream.
 I opted for Jemalloc since it is one of the most complete allocators and provide a lot of features. Moreover the the rust integration is really nice with the `_jemallocator_` and `jemallocator_ctl` crates.
 
 ## Example
@@ -74,7 +74,7 @@ I opted for Jemalloc since it is one of the most complete allocators and provide
 * The jemallocator crate default to prefixed symbols, so it wont override the `malloc` family set of functions in the resulting binary. If you have any C dependencies like zstd for compression/decompression, it will continue to use the default musl's libc allocator. This is a big issue because zstd's own allocation wont be tracked by jemallocator so the usage estimation will be invalid.
 * THP options: linux has a feature that might be enabled at the OS level by default named Transparent Huge Pages. This will automatically allocate bigger pages that the one asked by your allocator and re-address the allocated smaller pages on it. The issue is that it might increase the memory usage by a lot (because a small 4KiB allocation might be moved to a 1 MiB page) and more importantly, it wont be tracked as _resident_ memory by jemalloc. The best solution is to disable this feature at the program level with a `madvise` syscall. Jemalloc will do that for you if you specify `MALLOC_CONF=thp:never` or `JEMALLLOCA_CONF=thp:never`. This feature can cause a lot of surprising issues (see the redis doc about transparent huge page and https://redis.io/docs/latest/operate/oss_and_stack/management/optimization/latency/#latency-induced-by-transparent-huge-pages for example) and it only benefits certain types of workloads.
 * What jemalloc metric should I track to measure against my threshold, i.e. what metric is the most representative of the total memory usage.
-Jemalloc provides a lot of metrics for your: allocated, resident, residual, retained, ... The question is not about whats the one that will match with my RSS/memory working set measured by the OS: non will. The best that we can do is to measure the evolution of each metric against the RSS and determine a formula. Which will most likely be linear: C + alpha * M = RSS.
+Jemalloc provides a lot of metrics for you: allocated, resident, residual, retained, ... The question is not about whats the one that will match with my RSS/memory working set measured by the OS: non will. The best that we can do is to measure the evolution of each metric against the RSS and determine a formula. Which will most likely be linear: C + alpha * M = RSS.
 With this we can account for the thread stacks, the binary program binary and static sections as well as a pre-defined overhead (lets say 75%).
 
 # Conclusion
