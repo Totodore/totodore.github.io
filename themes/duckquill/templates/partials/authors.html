@@ -1,0 +1,14 @@
+{%- set author_list = page.authors -%}
+{%- if author_list | length == 1 -%}
+	{%- set author_string = author_list[0] -%}
+{%- else -%}
+	{%- set last_author = author_list | last -%}
+	{%- set other_authors = author_list[:-1] -%}
+	{%- set author_separator = <translate key="author_separator" default=", " language_strings /> -%}
+	{%- set conjunction = <translate key="author_conjunction" default=" and " language_strings /> -%}
+	{%- set author_string = other_authors | join(sep=author_separator) -%}
+	{%- set author_string = author_string ~ conjunction ~ last_author -%}
+{%- endif -%}
+
+{%- set by_author = <translate key="by_author" default="By $AUTHOR" language_strings /> -%}
+{{- by_author | replace(from="$AUTHOR", to=author_string) -}}
