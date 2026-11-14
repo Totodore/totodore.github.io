@@ -1,0 +1,40 @@
+{% component image(url, url_min="", alt="", full=false, full_bleed=false, start=false, end=false, pixels=false, transparent=false, no_hover=false, spoiler=false, solid=false, lazy=false) %}
+{%- set image_classes = [] -%}
+{%- if full -%}
+	{%- set image_classes = [...image_classes, "full"] -%}
+{%- endif -%}
+{%- if full_bleed -%}
+	{%- set image_classes = [...image_classes, "full-bleed"] -%}
+{%- endif -%}
+{%- if start -%}
+	{%- set image_classes = [...image_classes, "start"] -%}
+{%- endif -%}
+{%- if end -%}
+	{%- set image_classes = [...image_classes, "end"] -%}
+{%- endif -%}
+{%- if pixels -%}
+	{%- set image_classes = [...image_classes, "pixels"] -%}
+{%- endif -%}
+{%- if transparent -%}
+	{%- set image_classes = [...image_classes, "transparent"] -%}
+{%- endif -%}
+{%- if no_hover -%}
+	{%- set image_classes = [...image_classes, "no-hover"] -%}
+{%- endif -%}
+{%- if spoiler -%}
+	{%- set image_classes = [...image_classes, "spoiler"] -%}
+{%- endif -%}
+{%- if spoiler and solid -%}
+	{%- set image_classes = [...image_classes, "solid"] -%}
+{%- endif -%}
+
+{%- set image_classes = image_classes | join(sep=" ") -%}
+
+{%- if url_min -%}
+	<a href="{{ url }}">
+		<img class="{{ image_classes }}"{% if alt %} alt="{{ alt }}"{% endif %} src="{{ url_min }}"{% if lazy %} decoding="async" loading="lazy"{% endif %} />
+	</a>
+{%- else -%}
+	<img class="{{ image_classes }}"{% if alt %} alt="{{ alt }}"{% endif %} src="{{ url }}"{% if lazy %} decoding="async" loading="lazy"{% endif %} />
+{%- endif -%}
+{%- endcomponent image -%}

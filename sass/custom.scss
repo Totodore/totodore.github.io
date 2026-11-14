@@ -1,0 +1,33 @@
+// Duckquill renders the "tags:" label of an article as an <a class="tag">
+// directly inside <ul class="tags">, so it gets the same pill style as the
+// actual tags. Render it as a plain inline label instead.
+.tags > a.tag {
+	box-shadow: none;
+	background-color: transparent;
+	padding-inline: 0 0.25rem;
+	color: var(--fg-muted-4);
+
+	&:hover {
+		background-color: transparent;
+		color: var(--accent-color);
+	}
+}
+
+// Article list: same plain "tags:" label as on article pages, and use the
+// bundled Inter font for card titles (the theme forces system-ui there).
+#article-list article {
+	h3 {
+		font-family: "Inter Variable", var(--font-system-ui), var(--font-emoji);
+	}
+
+	.tags > a.tag {
+		background-color: transparent;
+		padding-inline: 0 0.25rem;
+		color: var(--fg-muted-4);
+
+		&:hover {
+			background-color: transparent;
+			color: var(--accent-color);
+		}
+	}
+}

@@ -1,0 +1,9 @@
+{% component mastodon(host="", user="", id, config={}) %}
+{%- set host = host or config?.extra?.comments?.host or "" -%}
+{%- set user = user or config?.extra?.comments?.user or "" -%}
+
+<iframe
+	class="mastodon-embed"
+	src="https://{{ host }}/@{{ user }}/{{ id }}/embed">
+</iframe>
+{%- endcomponent mastodon -%}
