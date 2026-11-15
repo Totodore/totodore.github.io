@@ -22,7 +22,7 @@ The result is a clean, ergonomic, and performant single-phase deserialization sy
 
 While working on [Socketioxide](https://github.com/totodore/socketioxide), an Axum-like Socket.IO server implementation in Rust, I encountered an issue I initially thought would be trivial. Spoiler: it wasn’t. It led me to rethink how `serde` works and ultimately dive deep into customizing it for the socketioxide needs.
 
-## &nbsp;&nbsp;&nbsp;&nbsp; The Socket.IO Protocol Quirks
+## The Socket.IO Protocol Quirks
 
 Socket.IO comes with its own protocol. Under the hood, it's mostly JSON, but with some custom rules:
 
@@ -67,7 +67,7 @@ Rust and `serde_json` give us great tools to work with structured data, but they
 * **Two-phase deserialization**: We must first parse the event to determine the correct handler, but the default approach fully deserializes the entire message too early, often unnecessarily.
 * **Memory fragmentation**: Using `serde_json::Value` for intermediate deserialization leads to lots of heap allocations.
 
-## &nbsp;&nbsp;&nbsp;&nbsp; 1. Naive solution: dynamic value handling and two-phase deserialization
+## 1. Naive solution: dynamic value handling and two-phase deserialization
 
 My first approach was to use `serde_json::Value` as a generic stand-in:
 
@@ -89,7 +89,7 @@ They are provided in an adjacent vector.
 * `Value` is heap-heavy: Parsing large messages fragments memory and reduces throughput.
 * Two-pass deserialization means doubling the amount of work.
 
-## &nbsp;&nbsp;&nbsp;&nbsp; 2. Another naive solution: annotated fields
+## 2. Another naive solution: annotated fields
 
 Users could put `#[serde(deserialize_with = "...")]` on binary fields to inject the binary buffer manually during deserialization. Unfortunately, Serde does not allow custom deserialization functions to access external state (like the binary buffer queue) in a clean way. This would also force the user to think about specifying this.
 And it doesn't solve the other issues such as the support for multiple arguments.
@@ -114,7 +114,7 @@ Serde uses the [visitor pattern] for deserialization which makes it extremely mo
 
 [visitor pattern]: https://en.wikipedia.org/wiki/Visitor_pattern
 
-## &nbsp;&nbsp;&nbsp;&nbsp; 1. Lazy deserialization
+## 1. Lazy deserialization
 
 Here is a quick example on how we can deserialize only the first element of a sequence by using a `FirstElement` struct that will be a serde [visitor](https://serde.rs/impl-deserialize.html#the-visitor-trait) and a [deserialize seed](https://docs.rs/serde/latest/serde/de/trait.DeserializeSeed.html).
 This allows us to map any kind of data to any type in a statically defined manner.
@@ -203,7 +203,7 @@ impl<'de, D: de::Deserializer<'de>> de::Deserializer<'de> for Deserializer<D> {
 
 With this we don't need to deserialize our data to an intermediate dynamic value, we can immediately find the corresponding event handler and deserialize the raw JSON string to a user provided type and skip the event.
 
-## &nbsp;&nbsp;&nbsp;&nbsp; 2. Precise handling of tuples vs arrays for variadic arguments
+## 2. Precise handling of tuples vs arrays for variadic arguments
 
 In Socket.IO if you send a vec with `socket.emit("event", [1, 2, 3, 4])`, it will be serialized like this: `[event, [1, 2, 3, 4]]` but if you send variadics with `socket.emit("event", 1, 2, 3, 4)`, it will be serialized as: `[event, 1, 2, 3, 4]`.
 
@@ -274,7 +274,7 @@ pub fn from_value<'de, T: Deserialize<'de>>(
 }
 ```
 
-## &nbsp;&nbsp;&nbsp;&nbsp; 3. Binary buffer reinjection
+## 3. Binary buffer reinjection
 
 As you saw before, with the visitor pattern we can completely separate the incoming data side with the mapped user types.
 This is what we are going to do! We are going to map serde maps (the binary placeholders) to user binary types.
