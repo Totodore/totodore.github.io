@@ -312,7 +312,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #### Second step, measuring those metrics against a variable load to determine what is the most representative metrics.
 
-_include grafana screenshots_
+![Pod RSS and working set far above every jemalloc statistic, the allocator lines flat while RSS swings between 110 and 206 MiB](/images/thp-enabled-jemalloc-vs-rss.jpg)
+
+_24 hours of production traffic. The two red lines are what the OS accounts for, the three lower lines are jemalloc's own view. Nothing the allocator reports follows the resident set: RSS swings by nearly 100 MiB while `resident` stays flat around 50 MiB, and the mean gap between them is over 120 MiB._
 
 
 #### Third step, not seeing any representative metrics and asking yourself whats wrong!
@@ -330,6 +332,12 @@ Jemalloc provides a lot of metrics for you: allocated, resident, residual, retai
 
 That being said if we do our measure again with these two params, we can clearly see that the most representative metric is the resident (which is not surprising). Resident memory is the nearest metric from what sees the OS, because it counts allocations,
 allocator overhead, fragmentations and dirty pages waiting to be removed. However check what other metrics are available from jemalloc and if one might better fit your program! Most of the time the rule will be a linear function with a base constant to  account for the thread stacks, the binary program binary and static sections as well as a pre-defined scaling overhead (e.g. 75%).
+
+
+![The same panel after disabling transparent huge pages: RSS drops to around 95 MiB and now moves in the same shape as the resident metric](/images/thp-disabled-jemalloc-vs-rss.jpg)
+
+_The same panel, same 24 hour span, after `MALLOC_CONF=thp:never`. The resident set has roughly halved, but the important part is the shape: the load ramp on the right lifts both the RSS and the `resident` line together. The gap between them is now close to constant, which is what makes it usable as a threshold._
+
 
 #### Fourth step, applying backpressure against the resident metric
 <details open="true">
