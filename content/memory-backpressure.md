@@ -13,11 +13,14 @@ For this reason, it is quite usual to add limits to processes or pods in a Kuber
 
 So what do we mean by memory backpressure? Well this is simply the ability of a system to delay new workloads or slow down to limit its memory usage to a given threshold. There are multiple solutions depending on the programming language, the kind of system you are integrating this into and the architecture of your program. We will focus on rust.
 
-First, what can be bound and what cannot? A global process RSS holds a lot of different kinds of memories:
-* The instructions of the program being run.
-* The static sections, holding all of the static, mutable and non-mutable data you defined.
-* Threads stacks (currently 2 MiB per stack).
-* Memory allocated dynamically by the process. (TODO: talk about working set size + heap)
+First, what can be bound and what cannot? The kernel enforces cgroup limits (`memory.max`) against everything charged to the cgroup, exposed as `memory.current`: the anonymous memory of its processes, the page cache of the files they read, write or memory-map, and kernel memory allocated on their behalf, such as socket buffers and page tables. Swap is accounted separately (`memory.swap.max`). When the limit is hit, the kernel first reclaims what it can, mostly clean page cache, and only then invokes the OOM killer. Kubernetes adds its own layer on top: the kubelet evicts pods based on the _memory working set_. Which is `memory.current` minus the inactive, easily reclaimable file pages.
+
+The main focus here will be the memory the kernel cannot drop without swapping which lives in the process's Resident Set Size (or RSS): the pages mapped by te process that are currently in RAM. A process RSS holds the following kinds of data:
+* The instructions of the program being run. These pages are backed by the executable file, so the kernel can drop them and read them back when needed.
+* The static sections: read-only data, also backed by the field, and mutable data (`.data`, `.bss`) which becomes anonymous memory once written.
+* Threads stacks: 2 MiB reserved per thread spawned with Rust's std by default, and usually 8 MiB for the main thread. Only the pages acutally touched count in RS.
+* Resident pages of memory-mapped files, which are file-backed reclaimable as well.
+* Memory allocated dynamically by the process through `malloc`: the heap.
 
 The only manageable one is the memory allocated dynamically. The three following solutions will concerns only this kind of memory and we will put the others in a to-measure overhead, either constant or growing linearly with the load.
 
@@ -136,14 +139,14 @@ async fn process(_payload: &[u8]) {
 Once you have ways to limit the workload, you need to tune them and for this you need to measure the metrics you picked against the real memory usage and define a rule.
 There are multiple caveats with this solution that will appear in this process:
 * you actually need to plan limits for the worst case scenario. For our server implementation, with a 5 MB request body and with a concurrency limit set to 1000 requests in parallel. You will need to reserve up to 5 GB of memory. And actually most request body might only weight 1 MB.
-* Other memory allocations, allocator overhead and memory fragmentation are not counted, so you need to account manually for them, and it might scale from inputs that are completely exogenous from the requests, like the number of CPU threads, the number of blocking threads spawned by [tokio](TODO:link), the allocator used, the OS, and so on...
+* Other memory allocations, allocator overhead and memory fragmentation are not counted, so you need to account manually for them, and it might scale from inputs that are completely exogenous from the requests, like the number of CPU threads, the number of blocking threads spawned by [tokio](tokio.rs), the allocator used, the OS, and so on...
 
 # Byte-budget bounding
 In fact, the capacity planning complexity and caveats come from the load per request; the maximum number of parallel request itself being straightforward to plan.
 So byte budget is another solution to bind the possible allocation for a given work task, through either a dedicated allocator or bounded arena. 
 
 The idea is to limit the maximum allocated memory for the processing task either with a memory arena or a custom allocator.
-One of its biggest advantage is a that it allows for a finer customization of the system behavior while we having a more precise idea of what we are limiting. And you can implement different behavior if your memory bound is reached, for example you can either flush processed data eagerly if it is a scratch bounded buffer of data or refuse any incoming data.
+One of its biggest advantage is that it allows for a finer customization of the system behavior while we having a more precise idea of what we are limiting. And you can implement different behavior if your memory bound is reached, for example you can either flush processed data eagerly if it is a scratch bounded buffer of data or refuse any incoming data.
 
 However it might cost you more configurations burden as the operator needs to tweak multiple limits and understand how they interact with each other. Also it might not be applicable for every systems.
 
@@ -191,17 +194,17 @@ static GLOBAL: CountingAlloc = CountingAlloc;
 
 However allocated memory is not the most representative metric and we can do much better!
 
-### Using Jemallocator
+### Using Jemalloc
 jemalloc is a general-purpose allocator originally written by Jason Evans for FreeBSD’s libc, and now maintained by Meta. It is one of the most feature-complete allocators, its performance is on par with the alternatives, and its main advantage for us is that it exposes a lot of memory usage statistics, which the tikv-jemalloc-ctl crate makes it easier to read from Rust. This makes it a good fit for our use case: a HTTP server at the beginning of a data processing pipeline, ingesting and validating a high volume of data before it is processed downstream. Rust bindings and a ready to use crate are available with the [tikv-jemallocator](https://github.com/tikv/jemallocator) crate and maintained by the tikv organisation.
 
-#### First step: collecting jemalloc metrics efficiently
+#### First step: collecting jemalloc metrics efficiently with Opentelemetry
+
 Jemalloc metrics are not automatically updated, for this you need to ask jemalloc with an `epoch::advance()` call. This operation is quite costly as jemalloc has multiple arenas and will lock everything to collect each metric. Consequently this cannot be done for each request.
 
-As the metric export interval is much higher (e.g. 30s), we also need to
-track for the minimum and maximum values during the collection interval of each metrics. So we can have more insights.
+We are using the opentelemetry-sdk to export data to a metric backend (here VictoriaMetrics), with a Grafana frontend.
+As the metric export interval is much higher than jemalloc advance calls (60s VS 1s), we also need to track for the minimum and maximum values during the collection interval of each metrics. So we can have more insights.
 
-First we can define a `Sample` struct to track the last value and the extremum of a jemalloc metric
-during the OTEL metric export.
+First we can define a `Sample` struct to track the last value and the extremum of a jemalloc metric during the OTEL metric export.
 
 <details open="true">
 
@@ -323,12 +326,12 @@ Hopefully by reading this you will not fall onto it :D! Indeed I stumbled upon t
 Firstly, the jemallocator crate defaults to prefixed symbols, so it won't override the `malloc` family set of functions in the resulting binary. If you have any C dependencies like zstd for compression/decompression, it will continue to use the default libc allocator. This is a big issue because zstd's own allocations won't be tracked by jemallocator. Hence the usage estimation will be invalid. To circumvent this, dont forget to enable the `unprefixed_malloc_on_supported_platforms` feature flag in your cargo.toml!
 
 Secondly, the main cause of our weird memory behavior is THP or Transparent Huge Page!
-Linux has a feature that might be enabled at the OS level by default named Transparent Huge Pages. This will automatically allocate bigger pages than the ones asked by your allocator and will re-address the previously-allocated smaller pages on it. The issue is that it might increase the memory usage drastically (because a small 4KiB allocation might be moved to a 1 MiB page) and more importantly, it wont be tracked as _resident_ memory by jemalloc.
+Linux has a feature that might be enabled at the OS level by default named Transparent Huge Pages. This will automatically allocate bigger pages than the ones asked by your allocator and will re-address the previously-allocated smaller pages on it. The issue is that it might increase the memory usage drastically (because a small 4KiB allocation might be moved to a 2 MiB page) and more importantly, it won't be tracked as _resident_ memory by jemalloc.
 
 Also, even with traffic being much smaller, the RSS won't reduce because most of it consists in huge pages.
 The best solution is to disable this feature at the program level with a `madvise` syscall. Jemalloc will do that for you if you specify `MALLOC_CONF=thp:never` or `_RJEM_MALLOC_CONF=thp:never`. This feature can cause a lot of other unexpected issues (see the redis doc [about transparent huge page](https://redis.io/docs/latest/operate/oss_and_stack/management/optimization/latency/#latency-induced-by-transparent-huge-pages)) and it only benefits certain types of workloads, so I strongly encourage you to read about it!
 
-Jemalloc provides a lot of metrics for you: allocated, resident, residual, retained, ... The question is not which one matches with my RSS/memory working set measured by the OS: none will. The best we can do is to measure the evolution of each metric against the RSS and determine a formula.
+Jemalloc provides a lot of metrics for you: allocated, active, resident, retained, ... The question is not which one matches with my RSS/memory working set measured by the OS: none will. The best we can do is to measure the evolution of each metric against the RSS and determine a formula.
 
 This being said, if we do our measure again with these two params, we can clearly see that the most representative metric is the resident, which is no suprise. Resident memory is the nearest metric from what sees the OS, because it counts allocations,
 allocator overhead, fragmentations and dirty pages waiting to be removed. However, check what other metrics are available from jemalloc and whether they fit your program better! Most of the time the rule will be a linear function with a base constant to  account for the thread stacks, the program binary and static sections as well as a pre-defined scaling overhead (e.g. 75%).
@@ -341,7 +344,7 @@ Now let's run a little (actually two) ingestion benchmarks to check that the res
 
 ![Two ingestion benchmarks, from 10:00 to 13:00 and from 16:00 to 17:00: RSS and jemalloc resident rise and fall together, about 65 MiB apart, while allocated and active stay under 72 MiB](/images/bench-jemalloc-vs-rss.png)
 
-Here, with the two benchmarks, from 10:00 to 13:00 and from 16:00 to 17:00 we can see that resident is clearly the most appropriate metric. In comparison, the allocated metric is much smaller and barely evolving. The main reason is because the allocated memory freed is still not released by the allocator.
+Here, with the two benchmarks, from 10:00 to 13:00 and from 16:00 to 17:00 we can see that resident is clearly the most appropriate metric. In comparison, the allocated metric follows the same shape but grows much less: about +30 MiB against +100 MiB for resident. The main reason is that freed memory is not released right away. It stays in dirty pages, which count as resident but not as allocated.
 
 #### Fourth step, applying backpressure against the resident metric
 <details open="true">
@@ -375,7 +378,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 </details>
 
 #### A small word about jemalloc metrics performances
-
+When calling `epoch::advance()` to update jemalloc metrics, it is actually going to walk every memory arenas. Jemalloc has this mechanism of having multiple memory arenas in order to reduce fragmentation and lock contention. It is controllable with the `narenas` param and by default is set to 4 per CPU thread. As jemalloc get the number of CPU thread with `sched_getaffinity` and that it does not follows cgroups, on a 64 cores host machine, narenas will be 256, even if you have a CPU limit of 1 so make sure to verify this.
 
 # Conclusion
 The global allocator solution is the easiest to set up, and it’s the one I usually reach for in the first place. I fall back to byte-budget bounding when it fits the target system better, or when I need fine-grained control: tuning individual components separately instead of applying a single global limit. The two aren’t mutually exclusive, and you can combine them if you need to. Whichever you choose, bear in mind the performance impact on your own workload.
