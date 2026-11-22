@@ -34,7 +34,6 @@ index_format = "fuse_json"
 [extra]
 accent_color = "#ff7800"
 accent_color_dark = "#ffa348"
-emoji_favicon = "🦀"
 # Self-hosted Inter (text + headings) and JetBrains Mono (code) shipped with Duckquill
 bundled_fonts = true
 source_url = "https://github.com/totodore/blog"
