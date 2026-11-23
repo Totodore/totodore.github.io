@@ -44,6 +44,8 @@ show_share_button = true
 show_backlinks = true
 # Site-specific style tweaks, compiled from sass/custom.scss
 styles = ["custom.css"]
+# Click an article image to view it full size
+scripts = ["image-zoom.js"]
 
 [extra.nav]
 show_feed = true
