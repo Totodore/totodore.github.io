@@ -1,0 +1,14 @@
+{#- Template for link posts: the local page only redirects to `extra.link`, so permalinks used by tags, search and the feed still lead somewhere. -#}
+<!doctype html>
+<html lang="{{ lang }}">
+<head>
+	<meta charset="utf-8">
+	<title>{{ page.title }}</title>
+	<link rel="canonical" href="{{ page.extra.link | safe }}">
+	<meta name="robots" content="noindex">
+	<meta http-equiv="refresh" content="0; url={{ page.extra.link | safe }}">
+</head>
+<body>
+	<p><a href="{{ page.extra.link | safe }}">{{ page.title }}</a></p>
+</body>
+</html>
