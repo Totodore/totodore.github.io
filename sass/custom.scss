@@ -59,3 +59,54 @@
 		max-height: 95vh;
 	}
 }
+
+// Link posts (`extra.link` in the front matter): a card that opens an external
+// page, such as a podcast episode, styled like the theme's featured/hot cards.
+#article-list article.link {
+	--bg-overlay: var(--blue-bg);
+
+	&::before {
+		position: absolute;
+		transform: translateY(-50%);
+		opacity: var(--disabled-opacity);
+		mask-size: cover;
+		-webkit-mask-size: cover;
+		transition: var(--transition-longer);
+		inset-block-start: 50%;
+		inset-inline-end: -3rem;
+		background-color: var(--blue-bg);
+		width: 12rem;
+		height: 12rem;
+		content: "";
+		-webkit-mask-image: var(--icon-external);
+		mask-image: var(--icon-external);
+	}
+
+	&:hover::before {
+		transform: translateY(-50%) rotate(-10deg) scale(1.5);
+	}
+
+	h3 {
+		color: var(--blue-fg);
+	}
+
+	.badge {
+		background-color: var(--blue-bg);
+		color: var(--blue-fg);
+
+		.icon {
+			-webkit-mask-image: var(--icon-external);
+			mask-image: var(--icon-external);
+		}
+	}
+
+	.tags li a {
+		background-color: var(--blue-bg);
+		color: var(--blue-fg);
+
+		&:hover {
+			background-color: var(--blue-fg);
+			color: var(--fg-contrast);
+		}
+	}
+}
